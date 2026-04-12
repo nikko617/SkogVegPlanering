@@ -1,0 +1,14 @@
+[general]
+name=SkogVegPlanering
+version=1.0.0
+qgisMinimumVersion=3.16
+supportsQt6=True
+icon=icons/tree.png
+category=Analysis
+author=Egil Devig
+about=Unified QGIS plugin for forest road planning with batch PDF import, validation, and cost distribution analysis
+repository=https://github.com/nikko617/SkogVegPlanering
+tracker=https://github.com/nikko617/SkogVegPlanering/issues
+changelog=
+    Version 1.0.0 - Initial release with batch PDF import and road validation
+tags=forest,roads,planning,analysis,gis,norway
