@@ -1,0 +1,7 @@
+QGIS>=3.16
+PyQt5>=5.13
+Shapely>=1.8
+GDAL>=3.2
+opencv-python>=4.5
+easyocr>=1.6
+rasterio>=1.2
