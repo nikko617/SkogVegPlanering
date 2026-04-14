@@ -63,6 +63,12 @@ class SkogVegPlaneringPlugin:
         add_action("tree.png", "Batch Import Wizard", self.open_batch_wizard)
         self.toolbar.addSeparator()
         add_action("tree.png", "Validate Network", self.run_validation)
+        self.toolbar.addSeparator()
+        add_action("tree.png", "Cost Distribution", self.open_cost_dialog)
+        self.toolbar.addSeparator()
+        add_action("tree.png", "Cable Way Planning", self.open_cableway_dialog)
+        self.toolbar.addSeparator()
+        add_action("tree.png", "Interactive Editor", self.open_editor_dialog)
 
         log.info("GUI initialized successfully")
 
@@ -84,13 +90,11 @@ class SkogVegPlaneringPlugin:
         log.info("Settings dialog requested")
 
     def open_batch_wizard(self):
-        """Open batch import wizard (placeholder)."""
-        QMessageBox.information(
-            self.iface.mainWindow(),
-            "SkogVegPlanering",
-            "Batch Import Wizard - Coming in STEG 3!"
-        )
-        log.info("Batch wizard requested")
+        """Open batch PDF import wizard (STEG 3)."""
+        from .ui.batch_wizard import BatchWizard
+        wizard = BatchWizard(self.iface)
+        wizard.exec_()
+        log.info("Batch wizard closed")
 
     def run_validation(self):
         """Open road network validation dialog (STEG 2)."""
@@ -98,3 +102,24 @@ class SkogVegPlaneringPlugin:
         dlg = ValidationDialog(self.iface)
         dlg.exec_()
         log.info("Validation dialog closed")
+
+    def open_cost_dialog(self):
+        """Open cost distribution dialog (STEG 4)."""
+        from .ui.cost_dialog import CostDialog
+        dlg = CostDialog(self.iface)
+        dlg.exec_()
+        log.info("Cost dialog closed")
+
+    def open_cableway_dialog(self):
+        """Open cable way planning dialog (STEG 5)."""
+        from .ui.cableway_dialog import CablewayDialog
+        dlg = CablewayDialog(self.iface)
+        dlg.exec_()
+        log.info("Cableway dialog closed")
+
+    def open_editor_dialog(self):
+        """Open interactive editor dialog (STEG 6)."""
+        from .ui.editor_dialog import EditorDialog
+        dlg = EditorDialog(self.iface)
+        dlg.exec_()
+        log.info("Editor dialog closed")
