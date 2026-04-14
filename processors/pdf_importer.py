@@ -296,6 +296,8 @@ class PdfImporter:
         pixmap = fitz_page.get_pixmap(matrix=mat, colorspace=_fitz.csGRAY)
         # samples is a bytes object: height × width × n_components
         arr = np.frombuffer(pixmap.samples, dtype=np.uint8)
+        # .copy() is required: pixmap.samples is a read-only buffer;
+        # OpenCV operations later need a writable array.
         return arr.reshape(pixmap.height, pixmap.width).copy()
 
     def _render_page(self, page) -> "np.ndarray":
