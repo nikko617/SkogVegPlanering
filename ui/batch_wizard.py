@@ -104,7 +104,7 @@ class _ImportWorker(QThread):
                 self.log_msg.emit(f"  [ADVARSEL] {err}")
 
             self.log_msg.emit(
-                f"  [OK] {result.line_count} linje(r) funnet pa {result.page_count} side(r)"
+                f"  [OK] {result.line_count} linje(r) funnet på {result.page_count} side(r)"
             )
             self.file_done.emit(path, result.line_count, len(result.errors))
 

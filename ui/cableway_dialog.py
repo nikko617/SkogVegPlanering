@@ -108,7 +108,7 @@ class CablewayDialog(QDialog):
     _COL_RADIUS  = 7
     _HEADERS     = [
         "Polyline ID", "Standplass #", "Avstand (m)",
-        "X", "Y", "Hoy (m)", "Stigning (%)", "Rekkevidde (m)",
+        "X", "Y", "Høy (m)", "Stigning (%)", "Rekkevidde (m)",
     ]
 
     def __init__(self, iface, parent=None):
@@ -335,7 +335,7 @@ class CablewayDialog(QDialog):
                             f"{s.slope_pct:.2f}",
                             f"{s.coverage_radius_m:.0f}",
                         ])
-            QMessageBox.information(self, "Eksport fullfort", f"Lagret til:\n{path}")
+            QMessageBox.information(self, "Eksport fullført", f"Lagret til:\n{path}")
             log.info("Cableway stations exported to %s", path)
         except OSError as exc:
             QMessageBox.critical(self, "Eksportfeil", str(exc))

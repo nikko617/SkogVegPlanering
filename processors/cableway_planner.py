@@ -247,7 +247,7 @@ class CablewayPlanner:
 
         if len(points) < 2:
             result.warnings.append(
-                f"Polyline {polyline_id}: for fa punkter ({len(points)}) – minst 2 kreves"
+                f"Polyline {polyline_id}: for få punkter ({len(points)}) – minst 2 kreves"
             )
             return result
 
@@ -293,7 +293,7 @@ class CablewayPlanner:
                 result.warnings.append(
                     f"Standplass {sid} (d={dist:.0f}m): stigning {slope:.1f}% er "
                     f"under minimum {self.min_slope_pct:.0f}% – taubane kanskje "
-                    f"ikke nodvendig her"
+                    f"ikke nødvendig her"
                 )
 
         # Build segments between consecutive stations
@@ -323,7 +323,7 @@ class CablewayPlanner:
             result.warnings.append(
                 f"Stasjonssavstand ({self.station_interval_m:.0f}m) overstiger "
                 f"2 x vinsjelengde ({2 * self.winch_length_m:.0f}m) – "
-                f"udekket omrade mulig"
+                f"udekket område mulig"
             )
 
         return result
