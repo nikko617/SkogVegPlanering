@@ -44,7 +44,14 @@ from qgis.core import (
     QgsPointXY,
     QgsField,
 )
-from qgis.PyQt.QtCore import QVariant
+try:
+    from qgis.PyQt.QtCore import QMetaType
+    _QINT    = QMetaType.Type.Int
+    _QDOUBLE = QMetaType.Type.Double
+except (ImportError, AttributeError):
+    from qgis.PyQt.QtCore import QVariant
+    _QINT    = QVariant.Int
+    _QDOUBLE = QVariant.Double
 
 from ..processors.cableway_planner import CablewayPlanner
 from ..utils.logger import setup_logger
@@ -350,12 +357,12 @@ class CablewayDialog(QDialog):
             vl = QgsVectorLayer("Point?crs=EPSG:4326", "Tauban-standplass", "memory")
             pr = vl.dataProvider()
             pr.addAttributes([
-                QgsField("polyline_id", QVariant.Int),
-                QgsField("station_id",  QVariant.Int),
-                QgsField("dist_m",      QVariant.Double),
-                QgsField("z_m",         QVariant.Double),
-                QgsField("slope_pct",   QVariant.Double),
-                QgsField("radius_m",    QVariant.Double),
+                QgsField("polyline_id", _QINT),
+                QgsField("station_id",  _QINT),
+                QgsField("dist_m",      _QDOUBLE),
+                QgsField("z_m",         _QDOUBLE),
+                QgsField("slope_pct",   _QDOUBLE),
+                QgsField("radius_m",    _QDOUBLE),
             ])
             vl.updateFields()
 
