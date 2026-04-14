@@ -67,6 +67,8 @@ class SkogVegPlaneringPlugin:
         add_action("tree.png", "Cost Distribution", self.open_cost_dialog)
         self.toolbar.addSeparator()
         add_action("tree.png", "Cable Way Planning", self.open_cableway_dialog)
+        self.toolbar.addSeparator()
+        add_action("tree.png", "Interactive Editor", self.open_editor_dialog)
 
         log.info("GUI initialized successfully")
 
@@ -114,3 +116,10 @@ class SkogVegPlaneringPlugin:
         dlg = CablewayDialog(self.iface)
         dlg.exec_()
         log.info("Cableway dialog closed")
+
+    def open_editor_dialog(self):
+        """Open interactive editor dialog (STEG 6)."""
+        from .ui.editor_dialog import EditorDialog
+        dlg = EditorDialog(self.iface)
+        dlg.exec_()
+        log.info("Editor dialog closed")
