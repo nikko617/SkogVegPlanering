@@ -266,7 +266,7 @@ class TestUndoRedo:
         ed.update_road(r.fid, name="Modified")
         assert ed.get_road(r.fid).name == "Modified"
         ed.undo()
-        assert ed.get_road(r.fid).name == "Modified"   # undo the update
+        assert ed.get_road(r.fid).name == "Original"   # undo the update
         ed.undo()
         assert ed.get_road(r.fid) is None              # undo the add
 
