@@ -152,13 +152,17 @@ class EditorDialog(QDialog):
         self._refresh_all()
 
         if preload_stations:
-            self.editor.load_stations(preload_stations)
-            self._refresh_stations()
-            self._set_status(
-                f"{len(preload_stations)} standplass overført fra taubanplanlegging – "
-                "juster koordinater direkte i tabellen"
-            )
-            self.tabs.setCurrentIndex(1)   # switch to Standplass tab
+            self._preload_stations(preload_stations)
+
+    def _preload_stations(self, station_records: list):
+        """Load pre-computed station records into the editor and switch to the Standplass tab."""
+        self.editor.load_stations(station_records)
+        self._refresh_stations()
+        self._set_status(
+            f"{len(station_records)} standplass overført fra taubanplanlegging – "
+            "juster koordinater direkte i tabellen"
+        )
+        self.tabs.setCurrentIndex(1)   # switch to Standplass tab
 
     # ------------------------------------------------------------------
     # UI construction
@@ -771,10 +775,11 @@ class EditorDialog(QDialog):
             options.driverName = "GPKG"
             options.fileEncoding = "UTF-8"
             options.layerName = layer_name
-            if append:
-                options.actionOnExistingFile = (
-                    QgsVectorFileWriter.CreateOrOverwriteLayer
-                )
+            options.actionOnExistingFile = (
+                QgsVectorFileWriter.CreateOrOverwriteLayer
+                if append
+                else QgsVectorFileWriter.CreateOrOverwriteFile
+            )
 
             if hasattr(QgsVectorFileWriter, "writeAsVectorFormatV3"):
                 err, msg, _, _ = QgsVectorFileWriter.writeAsVectorFormatV3(
