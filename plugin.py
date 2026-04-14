@@ -93,10 +93,8 @@ class SkogVegPlaneringPlugin:
         log.info("Batch wizard requested")
 
     def run_validation(self):
-        """Run network validation (placeholder)."""
-        QMessageBox.information(
-            self.iface.mainWindow(),
-            "SkogVegPlanering",
-            "Validation - Coming in STEG 2!"
-        )
-        log.info("Validation requested")
+        """Open road network validation dialog (STEG 2)."""
+        from .ui.validation_dialog import ValidationDialog
+        dlg = ValidationDialog(self.iface)
+        dlg.exec_()
+        log.info("Validation dialog closed")
