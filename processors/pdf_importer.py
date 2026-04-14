@@ -67,6 +67,8 @@ class ImportResult:
 
     pdf_path: str
     polylines: List[Polyline] = field(default_factory=list)
+    # Page index (0-based) for each polyline in ``polylines``
+    polyline_pages: List[int] = field(default_factory=list)
     page_count: int = 0
     errors: List[str] = field(default_factory=list)
 
@@ -183,6 +185,7 @@ class PdfImporter:
                     image = self._render_page(page)
                     polylines = self._detect_lines(image)
                     result.polylines.extend(polylines)
+                    result.polyline_pages.extend([page_num] * len(polylines))
                     log.debug(
                         "Page %d: %d line(s) detected", page_num + 1, len(polylines)
                     )
@@ -264,7 +267,7 @@ class PdfImporter:
                 pass
 
         if images:
-            # Use the first (largest) embedded image
+            # Use the first embedded image
             img_data = images[0].data
             pil_img = _PILImage.open(io.BytesIO(img_data)).convert("L")
             return np.array(pil_img, dtype=np.uint8)

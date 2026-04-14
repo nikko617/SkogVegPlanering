@@ -232,3 +232,26 @@ class TestPixelToGeo:
     def test_polylines_to_geo_empty_input(self):
         result = PdfImporter.polylines_to_geo([], 100, 100, (0, 0, 1, 1))
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# ImportResult – polyline_pages tracking
+# ---------------------------------------------------------------------------
+
+class TestImportResultPageTracking:
+
+    def test_polyline_pages_default_empty(self):
+        r = ImportResult(pdf_path="x.pdf")
+        assert r.polyline_pages == []
+
+    def test_polyline_pages_length_matches_polylines(self):
+        polylines = [[(0, 0), (1, 1)], [(2, 2), (3, 3)]]
+        pages     = [0, 1]
+        r = ImportResult(pdf_path="x.pdf", polylines=polylines, polyline_pages=pages)
+        assert len(r.polyline_pages) == len(r.polylines)
+
+    def test_polyline_pages_values(self):
+        polylines = [[(0, 0), (1, 1)]] * 3
+        pages     = [0, 0, 1]
+        r = ImportResult(pdf_path="x.pdf", polylines=polylines, polyline_pages=pages)
+        assert r.polyline_pages == [0, 0, 1]

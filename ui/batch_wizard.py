@@ -427,13 +427,18 @@ class _PageImport(QWizardPage):
         features = []
         for result in results:
             basename = os.path.basename(result.pdf_path)
-            for polyline in result.polylines:
+            for idx, polyline in enumerate(result.polylines):
+                page_num = (
+                    result.polyline_pages[idx]
+                    if idx < len(result.polyline_pages)
+                    else 0
+                )
                 feat = QgsFeature()
                 feat.setFields(layer.fields())
                 qgs_points = [QgsPointXY(x, y) for x, y in polyline]
                 feat.setGeometry(QgsGeometry.fromPolylineXY(qgs_points))
                 feat.setAttribute("source_pdf", basename)
-                feat.setAttribute("page", 0)
+                feat.setAttribute("page", page_num)
                 features.append(feat)
 
         provider.addFeatures(features)
