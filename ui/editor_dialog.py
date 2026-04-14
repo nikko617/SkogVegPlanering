@@ -293,6 +293,23 @@ class EditorDialog(QDialog):
                  roads_loaded, stations_loaded, dumps_loaded)
 
     @staticmethod
+    def _safe_attr(feat, *field_names):
+        """Return the first non-empty attribute value from *field_names*.
+
+        Returns ``None`` if none of the fields exist on the feature or all
+        values are falsy.  Using ``feat.attribute()`` raises a ``KeyError``
+        when the field is absent from the layer schema, so we catch that.
+        """
+        for field in field_names:
+            try:
+                val = feat.attribute(field)
+                if val:
+                    return val
+            except KeyError:
+                pass
+        return None
+
+    @staticmethod
     def _extract_roads_from_layer(layer) -> list:
         records = []
         for feat in layer.getFeatures():
@@ -306,8 +323,8 @@ class EditorDialog(QDialog):
                 vertices = [(p.x(), p.y()) for p in pts]
             except Exception:
                 pass
-            name = (feat.attribute("name") or feat.attribute("navn") or
-                    feat.attribute("id") or f"Veg {feat.id()}")
+            name = (EditorDialog._safe_attr(feat, "name", "navn", "id")
+                    or f"Veg {feat.id()}")
             records.append({"name": str(name), "vertices": vertices})
         return records
 
@@ -319,8 +336,8 @@ class EditorDialog(QDialog):
             if geom is None or geom.isEmpty():
                 continue
             pt = geom.asPoint()
-            name = (feat.attribute("name") or feat.attribute("navn") or
-                    feat.attribute("id") or f"Punkt {feat.id()}")
+            name = (EditorDialog._safe_attr(feat, "name", "navn", "id")
+                    or f"Punkt {feat.id()}")
             records.append({"name": str(name), "x": pt.x(), "y": pt.y()})
         return records
 
