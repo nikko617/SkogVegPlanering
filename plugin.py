@@ -65,6 +65,8 @@ class SkogVegPlaneringPlugin:
         add_action("tree.png", "Validate Network", self.run_validation)
         self.toolbar.addSeparator()
         add_action("tree.png", "Cost Distribution", self.open_cost_dialog)
+        self.toolbar.addSeparator()
+        add_action("tree.png", "Cable Way Planning", self.open_cableway_dialog)
 
         log.info("GUI initialized successfully")
 
@@ -105,3 +107,10 @@ class SkogVegPlaneringPlugin:
         dlg = CostDialog(self.iface)
         dlg.exec_()
         log.info("Cost dialog closed")
+
+    def open_cableway_dialog(self):
+        """Open cable way planning dialog (STEG 5)."""
+        from .ui.cableway_dialog import CablewayDialog
+        dlg = CablewayDialog(self.iface)
+        dlg.exec_()
+        log.info("Cableway dialog closed")
