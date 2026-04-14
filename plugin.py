@@ -63,6 +63,8 @@ class SkogVegPlaneringPlugin:
         add_action("tree.png", "Batch Import Wizard", self.open_batch_wizard)
         self.toolbar.addSeparator()
         add_action("tree.png", "Validate Network", self.run_validation)
+        self.toolbar.addSeparator()
+        add_action("tree.png", "Cost Distribution", self.open_cost_dialog)
 
         log.info("GUI initialized successfully")
 
@@ -96,3 +98,10 @@ class SkogVegPlaneringPlugin:
         dlg = ValidationDialog(self.iface)
         dlg.exec_()
         log.info("Validation dialog closed")
+
+    def open_cost_dialog(self):
+        """Open cost distribution dialog (STEG 4)."""
+        from .ui.cost_dialog import CostDialog
+        dlg = CostDialog(self.iface)
+        dlg.exec_()
+        log.info("Cost dialog closed")
