@@ -88,6 +88,54 @@ class ImportResult:
         return len(self.polylines)
 
 
+@dataclass
+class ClassifiedImportResult:
+    """
+    Classified import result separating roads, stations and dump sites.
+
+    Attributes
+    ----------
+    roads : list[Polyline]
+        Detected veilinje segments (two-point polylines).
+    road_pages : list[int]
+        Page index (0-based) for each entry in ``roads``.
+    stations : list[tuple[float, float]]
+        Centroid coordinates of detected standplass symbols.
+    station_pages : list[int]
+        Page index (0-based) for each entry in ``stations``.
+    dump_sites : list[list[tuple[float, float]]]
+        Polygon vertex lists for detected velteplass areas.
+    dump_site_pages : list[int]
+        Page index (0-based) for each entry in ``dump_sites``.
+    """
+
+    pdf_path: str
+    roads: List[Polyline] = field(default_factory=list)
+    road_pages: List[int] = field(default_factory=list)
+    stations: List[Tuple[float, float]] = field(default_factory=list)
+    station_pages: List[int] = field(default_factory=list)
+    dump_sites: List[List[Tuple[float, float]]] = field(default_factory=list)
+    dump_site_pages: List[int] = field(default_factory=list)
+    page_count: int = 0
+    errors: List[str] = field(default_factory=list)
+
+    @property
+    def success(self) -> bool:
+        return not self.errors
+
+    @property
+    def road_count(self) -> int:
+        return len(self.roads)
+
+    @property
+    def station_count(self) -> int:
+        return len(self.stations)
+
+    @property
+    def dump_site_count(self) -> int:
+        return len(self.dump_sites)
+
+
 # ---------------------------------------------------------------------------
 # Detection parameters
 # ---------------------------------------------------------------------------
@@ -110,6 +158,26 @@ class DetectionParams:
     # Image scaling – render at this DPI (affects detection resolution)
     dpi: int = 150
 
+    # ------------------------------------------------------------------
+    # Standplass (station) blob-detection parameters
+    # ------------------------------------------------------------------
+    # Contours whose area (pixels²) falls within [station_min_area,
+    # station_max_area] AND whose circularity (4π·A/P²) is at least
+    # station_circularity_min are reported as station symbols.
+    station_min_area: float = 30.0       # pixels² – smallest recognised symbol
+    station_max_area: float = 1500.0     # pixels² – largest recognised symbol
+    station_circularity_min: float = 0.3  # 0 = any shape, 1 = perfect circle
+
+    # ------------------------------------------------------------------
+    # Velteplass (dump-site) area-detection parameters
+    # ------------------------------------------------------------------
+    # Contours whose area falls within [dump_site_min_area,
+    # dump_site_max_area] AND whose bounding-rect aspect ratio is at
+    # most dump_site_max_aspect are reported as dump-site polygons.
+    dump_site_min_area: float = 1500.0     # pixels²
+    dump_site_max_area: float = 100000.0   # pixels²
+    dump_site_max_aspect: float = 6.0      # max(w,h) / min(w,h) limit
+
     def validate(self):
         """Raise ValueError on obviously wrong parameter values."""
         if not (0 <= self.canny_low < self.canny_high <= 255):
@@ -120,6 +188,18 @@ class DetectionParams:
             raise ValueError("hough_min_line_length must be positive")
         if self.dpi <= 0:
             raise ValueError("dpi must be positive")
+        if self.station_min_area <= 0 or self.station_max_area <= self.station_min_area:
+            raise ValueError(
+                "station_min_area must be positive and less than station_max_area"
+            )
+        if not (0.0 < self.station_circularity_min <= 1.0):
+            raise ValueError("station_circularity_min must be in (0, 1]")
+        if self.dump_site_min_area <= 0 or self.dump_site_max_area <= self.dump_site_min_area:
+            raise ValueError(
+                "dump_site_min_area must be positive and less than dump_site_max_area"
+            )
+        if self.dump_site_max_aspect < 1.0:
+            raise ValueError("dump_site_max_aspect must be >= 1.0")
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +332,101 @@ class PdfImporter:
             results.append(self.import_file(path))
         return results
 
+    def import_classified_file(self, pdf_path: str) -> "ClassifiedImportResult":
+        """
+        Import a single PDF and return classified veilinjer, standplasser
+        and velteplasser.
+
+        Roads are detected via Canny + Probabilistic Hough line transform.
+        Stations (standplasser) are detected as small roughly-circular blobs.
+        Dump sites (velteplasser) are detected as medium-to-large polygonal areas.
+
+        Parameters
+        ----------
+        pdf_path : str
+            Absolute or relative path to the PDF.
+
+        Returns
+        -------
+        ClassifiedImportResult
+        """
+        result = ClassifiedImportResult(pdf_path=pdf_path)
+
+        if not os.path.isfile(pdf_path):
+            result.errors.append(f"Filen finnes ikke: {pdf_path}")
+            return result
+
+        if not _HAS_CV2:
+            result.errors.append("opencv-python-headless er ikke installert")
+            return result
+
+        if not _HAS_FITZ and not _HAS_PYPDF:
+            result.errors.append("PyMuPDF eller pypdf er ikke installert")
+            return result
+
+        if _HAS_FITZ:
+            try:
+                doc = _fitz.open(pdf_path)
+                result.page_count = doc.page_count
+                log.info(
+                    "Classified import %s (%d page(s)) via PyMuPDF",
+                    pdf_path, result.page_count,
+                )
+                for page_num in range(doc.page_count):
+                    log.debug("Processing page %d/%d", page_num + 1, result.page_count)
+                    try:
+                        gray = self._render_fitz_page(doc[page_num])
+                        self._classify_page(gray, page_num, result)
+                    except Exception as exc:
+                        msg = f"Side {page_num + 1}: {exc}"
+                        result.errors.append(msg)
+                        log.warning(msg)
+                doc.close()
+            except Exception as exc:
+                result.errors.append(f"Kunne ikke lese PDF: {exc}")
+                log.error("Failed to read %s: %s", pdf_path, exc)
+        else:
+            if not _HAS_PIL:
+                result.errors.append("Pillow er ikke installert")
+                return result
+            try:
+                reader = _pypdf.PdfReader(pdf_path)
+                result.page_count = len(reader.pages)
+                log.info(
+                    "Classified import %s (%d page(s)) via pypdf",
+                    pdf_path, result.page_count,
+                )
+                for page_num, page in enumerate(reader.pages):
+                    log.debug("Processing page %d/%d", page_num + 1, result.page_count)
+                    try:
+                        gray = self._render_page(page)
+                        self._classify_page(gray, page_num, result)
+                    except Exception as exc:
+                        msg = f"Side {page_num + 1}: {exc}"
+                        result.errors.append(msg)
+                        log.warning(msg)
+            except Exception as exc:
+                result.errors.append(f"Kunne ikke lese PDF: {exc}")
+                log.error("Failed to read %s: %s", pdf_path, exc)
+
+        return result
+
+    def import_classified_files(
+        self, pdf_paths: List[str]
+    ) -> "List[ClassifiedImportResult]":
+        """
+        Import multiple PDF files and return classified results.
+
+        Parameters
+        ----------
+        pdf_paths : list[str]
+
+        Returns
+        -------
+        list[ClassifiedImportResult]
+        """
+        return [self.import_classified_file(path) for path in pdf_paths]
+
     # ------------------------------------------------------------------
     # Image pipeline (testable with synthetic numpy arrays)
     # ------------------------------------------------------------------
@@ -278,6 +453,34 @@ class PdfImporter:
         if not _HAS_CV2:
             raise RuntimeError("opencv-python-headless is required")
         return self._detect_lines_from_gray(gray_array)
+
+    def detect_features_from_array(
+        self, gray_array: "np.ndarray"
+    ) -> "Tuple[List[Polyline], List[Tuple[float, float]], List[List[Tuple[float, float]]]]":
+        """
+        Run full feature classification on a pre-existing grayscale NumPy array.
+
+        This entry point is used by unit tests to inject synthetic images
+        without requiring a real PDF file.
+
+        Parameters
+        ----------
+        gray_array : np.ndarray
+            2-D uint8 array (grayscale image).
+
+        Returns
+        -------
+        tuple of (roads, stations, dump_sites)
+            roads      – list[Polyline] detected veilinje segments
+            stations   – list[(cx, cy)] centroid coordinates of standplass symbols
+            dump_sites – list[list[(x, y)]] polygon vertices of velteplass areas
+        """
+        if not _HAS_CV2:
+            raise RuntimeError("opencv-python-headless is required")
+        roads = self._detect_lines_from_gray(gray_array)
+        stations = self._detect_stations_from_gray(gray_array)
+        dump_sites = self._detect_dump_sites_from_gray(gray_array)
+        return roads, stations, dump_sites
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -359,6 +562,115 @@ class PdfImporter:
                 polylines.append([(float(x1), float(y1)), (float(x2), float(y2))])
 
         return polylines
+
+    def _classify_page(
+        self,
+        gray: "np.ndarray",
+        page_num: int,
+        result: "ClassifiedImportResult",
+    ) -> None:
+        """Detect and classify all features on one page, appending to *result*."""
+        roads = self._detect_lines_from_gray(gray)
+        stations = self._detect_stations_from_gray(gray)
+        dump_sites = self._detect_dump_sites_from_gray(gray)
+
+        result.roads.extend(roads)
+        result.road_pages.extend([page_num] * len(roads))
+        result.stations.extend(stations)
+        result.station_pages.extend([page_num] * len(stations))
+        result.dump_sites.extend(dump_sites)
+        result.dump_site_pages.extend([page_num] * len(dump_sites))
+
+        log.debug(
+            "Page %d: %d veilinje(r), %d standplass(er), %d velteplass(er)",
+            page_num + 1, len(roads), len(stations), len(dump_sites),
+        )
+
+    def _detect_stations_from_gray(
+        self, gray: "np.ndarray"
+    ) -> "List[Tuple[float, float]]":
+        """
+        Detect standplass symbols as small roughly-circular blobs.
+
+        The grayscale image is binarised with Otsu's method (inverted so
+        dark ink becomes foreground).  External contours are filtered by
+        area and circularity (4π·A/P²) to select compact point symbols
+        while rejecting elongated road lines.
+
+        Returns
+        -------
+        list[(cx, cy)]
+            Centroid pixel coordinates of each detected symbol.
+        """
+        p = self.params
+        _, thresh = _cv2.threshold(
+            gray, 0, 255, _cv2.THRESH_BINARY_INV + _cv2.THRESH_OTSU
+        )
+        contours, _ = _cv2.findContours(
+            thresh, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE
+        )
+        stations: List[Tuple[float, float]] = []
+        for cnt in contours:
+            area = _cv2.contourArea(cnt)
+            if not (p.station_min_area <= area <= p.station_max_area):
+                continue
+            perimeter = _cv2.arcLength(cnt, True)
+            if perimeter == 0:
+                continue
+            circularity = 4.0 * math.pi * area / (perimeter * perimeter)
+            if circularity < p.station_circularity_min:
+                continue
+            M = _cv2.moments(cnt)
+            if M["m00"] == 0:
+                continue
+            cx = M["m10"] / M["m00"]
+            cy = M["m01"] / M["m00"]
+            stations.append((float(cx), float(cy)))
+        return stations
+
+    def _detect_dump_sites_from_gray(
+        self, gray: "np.ndarray"
+    ) -> "List[List[Tuple[float, float]]]":
+        """
+        Detect velteplass areas as medium-to-large polygonal regions.
+
+        A morphological closing pass connects nearby edges before contour
+        extraction.  Contours are filtered by area and bounding-rect
+        aspect ratio: highly elongated shapes (roads) are excluded; the
+        remaining roughly-rectangular blobs are approximated as polygons.
+
+        Returns
+        -------
+        list[list[(x, y)]]
+            Vertex lists (≥3 points) of each detected area polygon.
+        """
+        p = self.params
+        _, thresh = _cv2.threshold(
+            gray, 0, 255, _cv2.THRESH_BINARY_INV + _cv2.THRESH_OTSU
+        )
+        kernel = _cv2.getStructuringElement(_cv2.MORPH_RECT, (3, 3))
+        closed = _cv2.morphologyEx(thresh, _cv2.MORPH_CLOSE, kernel, iterations=2)
+        contours, _ = _cv2.findContours(
+            closed, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE
+        )
+        dump_sites: List[List[Tuple[float, float]]] = []
+        for cnt in contours:
+            area = _cv2.contourArea(cnt)
+            if not (p.dump_site_min_area <= area <= p.dump_site_max_area):
+                continue
+            _, _, w, h = _cv2.boundingRect(cnt)
+            short_side = min(w, h)
+            if short_side == 0:
+                continue
+            aspect = max(w, h) / short_side
+            if aspect > p.dump_site_max_aspect:
+                continue
+            epsilon = 0.02 * _cv2.arcLength(cnt, True)
+            approx = _cv2.approxPolyDP(cnt, epsilon, True)
+            polygon = [(float(pt[0][0]), float(pt[0][1])) for pt in approx]
+            if len(polygon) >= 3:
+                dump_sites.append(polygon)
+        return dump_sites
 
     # ------------------------------------------------------------------
     # Coordinate helpers (pixel → geographic)
