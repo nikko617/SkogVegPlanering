@@ -84,13 +84,11 @@ class SkogVegPlaneringPlugin:
         log.info("Settings dialog requested")
 
     def open_batch_wizard(self):
-        """Open batch import wizard (placeholder)."""
-        QMessageBox.information(
-            self.iface.mainWindow(),
-            "SkogVegPlanering",
-            "Batch Import Wizard - Coming in STEG 3!"
-        )
-        log.info("Batch wizard requested")
+        """Open batch PDF import wizard (STEG 3)."""
+        from .ui.batch_wizard import BatchWizard
+        wizard = BatchWizard(self.iface)
+        wizard.exec_()
+        log.info("Batch wizard closed")
 
     def run_validation(self):
         """Open road network validation dialog (STEG 2)."""
