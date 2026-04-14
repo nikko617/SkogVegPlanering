@@ -53,6 +53,13 @@ except ImportError:  # pragma: no cover
     _pypdf = None
     _HAS_PYPDF = False
 
+try:
+    import fitz as _fitz  # PyMuPDF – renders vector + raster PDF pages
+    _HAS_FITZ = True
+except ImportError:  # pragma: no cover
+    _fitz = None
+    _HAS_FITZ = False
+
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -162,41 +169,69 @@ class PdfImporter:
             result.errors.append(f"Filen finnes ikke: {pdf_path}")
             return result
 
-        if not _HAS_PYPDF:
-            result.errors.append("pypdf er ikke installert")
-            return result
-
-        if not _HAS_PIL:
-            result.errors.append("Pillow er ikke installert")
-            return result
-
         if not _HAS_CV2:
             result.errors.append("opencv-python-headless er ikke installert")
             return result
 
-        try:
-            reader = _pypdf.PdfReader(pdf_path)
-            result.page_count = len(reader.pages)
-            log.info("Importing %s (%d page(s))", pdf_path, result.page_count)
+        if not _HAS_FITZ and not _HAS_PYPDF:
+            result.errors.append("PyMuPDF eller pypdf er ikke installert")
+            return result
 
-            for page_num, page in enumerate(reader.pages):
-                log.debug("Processing page %d/%d", page_num + 1, result.page_count)
-                try:
-                    image = self._render_page(page)
-                    polylines = self._detect_lines(image)
-                    result.polylines.extend(polylines)
-                    result.polyline_pages.extend([page_num] * len(polylines))
-                    log.debug(
-                        "Page %d: %d line(s) detected", page_num + 1, len(polylines)
-                    )
-                except Exception as exc:
-                    msg = f"Side {page_num + 1}: {exc}"
-                    result.errors.append(msg)
-                    log.warning(msg)
+        if _HAS_FITZ:
+            # PyMuPDF renders both vector and raster PDF content correctly
+            try:
+                doc = _fitz.open(pdf_path)
+                result.page_count = doc.page_count
+                log.info("Importing %s (%d page(s)) via PyMuPDF", pdf_path, result.page_count)
 
-        except Exception as exc:
-            result.errors.append(f"Kunne ikke lese PDF: {exc}")
-            log.error("Failed to read %s: %s", pdf_path, exc)
+                for page_num in range(doc.page_count):
+                    log.debug("Processing page %d/%d", page_num + 1, result.page_count)
+                    try:
+                        image = self._render_fitz_page(doc[page_num])
+                        polylines = self._detect_lines(image)
+                        result.polylines.extend(polylines)
+                        result.polyline_pages.extend([page_num] * len(polylines))
+                        log.debug(
+                            "Page %d: %d line(s) detected", page_num + 1, len(polylines)
+                        )
+                    except Exception as exc:
+                        msg = f"Side {page_num + 1}: {exc}"
+                        result.errors.append(msg)
+                        log.warning(msg)
+
+                doc.close()
+            except Exception as exc:
+                result.errors.append(f"Kunne ikke lese PDF: {exc}")
+                log.error("Failed to read %s: %s", pdf_path, exc)
+        else:
+            # Fallback: pypdf can only extract embedded raster XObject images
+            if not _HAS_PIL:
+                result.errors.append("Pillow er ikke installert")
+                return result
+
+            try:
+                reader = _pypdf.PdfReader(pdf_path)
+                result.page_count = len(reader.pages)
+                log.info("Importing %s (%d page(s)) via pypdf", pdf_path, result.page_count)
+
+                for page_num, page in enumerate(reader.pages):
+                    log.debug("Processing page %d/%d", page_num + 1, result.page_count)
+                    try:
+                        image = self._render_page(page)
+                        polylines = self._detect_lines(image)
+                        result.polylines.extend(polylines)
+                        result.polyline_pages.extend([page_num] * len(polylines))
+                        log.debug(
+                            "Page %d: %d line(s) detected", page_num + 1, len(polylines)
+                        )
+                    except Exception as exc:
+                        msg = f"Side {page_num + 1}: {exc}"
+                        result.errors.append(msg)
+                        log.warning(msg)
+
+            except Exception as exc:
+                result.errors.append(f"Kunne ikke lese PDF: {exc}")
+                log.error("Failed to read %s: %s", pdf_path, exc)
 
         return result
 
@@ -247,6 +282,21 @@ class PdfImporter:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _render_fitz_page(self, fitz_page) -> "np.ndarray":
+        """
+        Render a PyMuPDF page to a grayscale NumPy array.
+
+        PyMuPDF (fitz) fully rasterises all PDF content – vector paths,
+        text, and embedded images – so this method works for both
+        scanned-image PDFs and vector-drawn road-map PDFs.
+        """
+        scale = self.params.dpi / 72.0
+        mat = _fitz.Matrix(scale, scale)
+        pixmap = fitz_page.get_pixmap(matrix=mat, colorspace=_fitz.csGRAY)
+        # samples is a bytes object: height × width × n_components
+        arr = np.frombuffer(pixmap.samples, dtype=np.uint8)
+        return arr.reshape(pixmap.height, pixmap.width).copy()
 
     def _render_page(self, page) -> "np.ndarray":
         """
