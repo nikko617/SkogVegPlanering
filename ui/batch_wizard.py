@@ -96,15 +96,15 @@ class _ImportWorker(QThread):
                 self.log_msg.emit("Import avbrutt av bruker.")
                 break
 
-            self.log_msg.emit(f"Behandler: {os.path.basename(path)} …")
+            self.log_msg.emit(f"Behandler: {os.path.basename(path)} ...")
             result = importer.import_file(path)
             results.append(result)
 
             for err in result.errors:
-                self.log_msg.emit(f"  ⚠ {err}")
+                self.log_msg.emit(f"  [ADVARSEL] {err}")
 
             self.log_msg.emit(
-                f"  ✓ {result.line_count} linje(r) funnet på {result.page_count} side(r)"
+                f"  [OK] {result.line_count} linje(r) funnet pa {result.page_count} side(r)"
             )
             self.file_done.emit(path, result.line_count, len(result.errors))
 

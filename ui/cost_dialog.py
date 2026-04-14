@@ -312,7 +312,7 @@ class CostDialog(QDialog):
             QMessageBox.warning(
                 self, "Advarsler",
                 "\n".join(result.warnings[:10])
-                + ("\n…" if len(result.warnings) > 10 else ""),
+                + ("\n..." if len(result.warnings) > 10 else ""),
             )
 
         log.info(
