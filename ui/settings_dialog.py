@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-settings_dialog.py – Plugin Settings Dialog for SkogVegPlanering
+settings_dialog.py - Plugin Settings Dialog for SkogVegPlanering
 
 Lets the user configure default values that are shared across all dialogs:
   • Validation thresholds (max slope, min curve radius)

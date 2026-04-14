@@ -81,13 +81,13 @@ class SkogVegPlaneringPlugin:
 
     def open_settings(self):
         """Open settings dialog."""
-        from .ui.settings_dialog import SettingsDialog, get_max_slope, get_min_radius, get_layer_name, get_import_layer_name
-        dlg = SettingsDialog(self.iface)
+        from .ui import settings_dialog as sd
+        dlg = sd.SettingsDialog(self.iface)
         if dlg.exec_():
-            self.max_slope_percent = get_max_slope()
-            self.min_curve_radius = get_min_radius()
-            self.layer_name = get_layer_name() or None
-            self.import_layer_name = get_import_layer_name() or None
+            self.max_slope_percent = sd.get_max_slope()
+            self.min_curve_radius = sd.get_min_radius()
+            self.layer_name = sd.get_layer_name() or None
+            self.import_layer_name = sd.get_import_layer_name() or None
             log.info("Settings updated")
         log.info("Settings dialog closed")
 
