@@ -40,10 +40,12 @@ from qgis.core import (
     QgsProject,
     QgsWkbTypes,
     QgsVectorLayer,
+    QgsVectorFileWriter,
     QgsFeature,
     QgsGeometry,
     QgsPointXY,
     QgsField,
+    QgsCoordinateTransformContext,
 )
 try:
     from qgis.PyQt.QtCore import QMetaType
@@ -68,6 +70,54 @@ from ..utils.logger import setup_logger
 log = setup_logger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Small helper dialog for coordinate input
+# ──────────────────────────────────────────────────────────────────────────────
+
+class _CoordInputDialog(QDialog):
+    """Ask the user for X (east) and Y (north) coordinates for a new point feature."""
+
+    def __init__(self, title="Oppgi koordinater", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setFixedWidth(320)
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(
+            "Oppgi kartkoordinater (f.eks. UTM 32N – EPSG:25832).\n"
+            "Du kan også endre koordinatene direkte i tabellen etterpå."
+        ))
+
+        row_x = QHBoxLayout()
+        row_x.addWidget(QLabel("X (øst):"))
+        self.x_spin = QDoubleSpinBox()
+        self.x_spin.setRange(-1e9, 1e9)
+        self.x_spin.setDecimals(2)
+        self.x_spin.setValue(0.0)
+        self.x_spin.setSingleStep(1.0)
+        row_x.addWidget(self.x_spin)
+        lay.addLayout(row_x)
+
+        row_y = QHBoxLayout()
+        row_y.addWidget(QLabel("Y (nord):"))
+        self.y_spin = QDoubleSpinBox()
+        self.y_spin.setRange(-1e9, 1e9)
+        self.y_spin.setDecimals(2)
+        self.y_spin.setValue(0.0)
+        self.y_spin.setSingleStep(1.0)
+        row_y.addWidget(self.y_spin)
+        lay.addLayout(row_y)
+
+        from qgis.PyQt.QtWidgets import QDialogButtonBox as _DBB
+        btns = _DBB(_DBB.Ok | _DBB.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    def values(self):
+        """Return (x, y) as entered by the user."""
+        return self.x_spin.value(), self.y_spin.value()
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Column definitions (index, header, editable)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -90,7 +140,7 @@ class EditorDialog(QDialog):
         dlg.exec_()
     """
 
-    def __init__(self, iface, parent=None):
+    def __init__(self, iface, parent=None, preload_stations=None):
         super().__init__(parent or iface.mainWindow())
         self.iface   = iface
         self.editor  = FeatureEditor()
@@ -100,6 +150,19 @@ class EditorDialog(QDialog):
         self._build_ui()
         self._register_shortcuts()
         self._refresh_all()
+
+        if preload_stations:
+            self._preload_stations(preload_stations)
+
+    def _preload_stations(self, station_records: list):
+        """Load pre-computed station records into the editor and switch to the Standplass tab."""
+        self.editor.load_stations(station_records)
+        self._refresh_stations()
+        self._set_status(
+            f"{len(station_records)} standplass overført fra taubanplanlegging – "
+            "juster koordinater direkte i tabellen"
+        )
+        self.tabs.setCurrentIndex(1)   # switch to Standplass tab
 
     # ------------------------------------------------------------------
     # UI construction
@@ -190,6 +253,11 @@ class EditorDialog(QDialog):
         export_qgis_btn = QPushButton("Lagre til QGIS-lag")
         export_qgis_btn.clicked.connect(self._on_export_qgis)
         btn_row.addWidget(export_qgis_btn)
+
+        export_gpkg_btn = QPushButton("Eksporter til GeoPackage…")
+        export_gpkg_btn.setToolTip("Eksporter alle lag til én GeoPackage-fil (.gpkg) for sending til Statsforvalter")
+        export_gpkg_btn.clicked.connect(self._on_export_gpkg)
+        btn_row.addWidget(export_gpkg_btn)
 
         export_csv_btn = QPushButton("Eksporter CSV...")
         export_csv_btn.clicked.connect(self._on_export_csv)
@@ -352,16 +420,24 @@ class EditorDialog(QDialog):
         self._set_status(f"La til veg (fid={road.fid})")
 
     def _on_add_station(self):
-        s = self.editor.add_station("Ny standplass", 0.0, 0.0)
+        dlg = _CoordInputDialog("Ny standplass – oppgi koordinater", self)
+        if dlg.exec_() != _CoordInputDialog.Accepted:
+            return
+        x, y = dlg.values()
+        s = self.editor.add_station("Ny standplass", x, y)
         self._refresh_stations()
         self._update_undo_redo()
-        self._set_status(f"La til standplass (fid={s.fid})")
+        self._set_status(f"La til standplass (fid={s.fid}) ved X={x:.2f}, Y={y:.2f}")
 
     def _on_add_dump(self):
-        d = self.editor.add_dump_site("Ny velteplass", 0.0, 0.0)
+        dlg = _CoordInputDialog("Ny velteplass – oppgi koordinater", self)
+        if dlg.exec_() != _CoordInputDialog.Accepted:
+            return
+        x, y = dlg.values()
+        d = self.editor.add_dump_site("Ny velteplass", x, y)
         self._refresh_dumps()
         self._update_undo_redo()
-        self._set_status(f"La til velteplass (fid={d.fid})")
+        self._set_status(f"La til velteplass (fid={d.fid}) ved X={x:.2f}, Y={y:.2f}")
 
     def _on_delete(self):
         tab_idx = self.tabs.currentIndex()
@@ -558,7 +634,7 @@ class EditorDialog(QDialog):
 
     def _create_road_layer(self) -> int:
         try:
-            vl = QgsVectorLayer("LineString?crs=EPSG:4326", "Veger (redigert)", "memory")
+            vl = QgsVectorLayer("LineString?crs=EPSG:25832", "Veger (redigert)", "memory")
             pr = vl.dataProvider()
             pr.addAttributes([
                 QgsField("fid",        _QINT),
@@ -586,7 +662,7 @@ class EditorDialog(QDialog):
 
     def _create_station_layer(self) -> int:
         try:
-            vl = QgsVectorLayer("Point?crs=EPSG:4326", "Standplass (redigert)", "memory")
+            vl = QgsVectorLayer("Point?crs=EPSG:25832", "Standplass (redigert)", "memory")
             pr = vl.dataProvider()
             pr.addAttributes([
                 QgsField("fid",        _QINT),
@@ -613,7 +689,7 @@ class EditorDialog(QDialog):
 
     def _create_dump_layer(self) -> int:
         try:
-            vl = QgsVectorLayer("Point?crs=EPSG:4326", "Velteplass (redigert)", "memory")
+            vl = QgsVectorLayer("Point?crs=EPSG:25832", "Velteplass (redigert)", "memory")
             pr = vl.dataProvider()
             pr.addAttributes([
                 QgsField("fid",     _QINT),
@@ -635,6 +711,152 @@ class EditorDialog(QDialog):
         except Exception as exc:
             log.warning("Could not create dump site layer: %s", exc)
             return 0
+
+    # ------------------------------------------------------------------
+    # Export to GeoPackage
+    # ------------------------------------------------------------------
+
+    def _on_export_gpkg(self):
+        """Export roads, stations, and dump sites to a single GeoPackage file."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Eksporter til GeoPackage", "", "GeoPackage (*.gpkg)"
+        )
+        if not path:
+            return
+        if not path.endswith(".gpkg"):
+            path += ".gpkg"
+
+        exported = []
+        # Road layer
+        road_layer = self._build_road_layer_obj()
+        if road_layer and road_layer.featureCount() > 0:
+            ok, msg = self._write_layer_to_gpkg(road_layer, path, "veger", append=False)
+            if ok:
+                exported.append(f"{road_layer.featureCount()} veg(er)")
+            else:
+                QMessageBox.critical(self, "Eksportfeil (veger)", msg)
+                return
+
+        # Station layer
+        sta_layer = self._build_station_layer_obj()
+        if sta_layer and sta_layer.featureCount() > 0:
+            ok, msg = self._write_layer_to_gpkg(sta_layer, path, "standplass", append=True)
+            if ok:
+                exported.append(f"{sta_layer.featureCount()} standplass")
+            else:
+                QMessageBox.critical(self, "Eksportfeil (standplass)", msg)
+                return
+
+        # Dump site layer
+        dump_layer = self._build_dump_layer_obj()
+        if dump_layer and dump_layer.featureCount() > 0:
+            ok, msg = self._write_layer_to_gpkg(dump_layer, path, "velteplass", append=True)
+            if ok:
+                exported.append(f"{dump_layer.featureCount()} velteplass")
+            else:
+                QMessageBox.critical(self, "Eksportfeil (velteplass)", msg)
+                return
+
+        if exported:
+            summary = ", ".join(exported)
+            QMessageBox.information(
+                self, "GeoPackage eksportert",
+                f"Eksportert til:\n{path}\n\nInnhold: {summary}"
+            )
+            log.info("GeoPackage exported to %s: %s", path, summary)
+        else:
+            QMessageBox.warning(self, "Ingen data", "Det er ingen elementer å eksportere.")
+
+    @staticmethod
+    def _write_layer_to_gpkg(layer, path, layer_name, append=False):
+        """Write a single layer to a GeoPackage file. Returns (ok, message)."""
+        try:
+            options = QgsVectorFileWriter.SaveVectorOptions()
+            options.driverName = "GPKG"
+            options.fileEncoding = "UTF-8"
+            options.layerName = layer_name
+            options.actionOnExistingFile = (
+                QgsVectorFileWriter.CreateOrOverwriteLayer
+                if append
+                else QgsVectorFileWriter.CreateOrOverwriteFile
+            )
+
+            if hasattr(QgsVectorFileWriter, "writeAsVectorFormatV3"):
+                err, msg, _, _ = QgsVectorFileWriter.writeAsVectorFormatV3(
+                    layer, path, QgsCoordinateTransformContext(), options
+                )
+            else:
+                err, msg = QgsVectorFileWriter.writeAsVectorFormatV2(
+                    layer, path, QgsCoordinateTransformContext(), options
+                )[:2]
+            return (err == 0), msg
+        except Exception as exc:
+            return False, str(exc)
+
+    def _build_road_layer_obj(self):
+        vl = QgsVectorLayer("LineString?crs=EPSG:25832", "veger", "memory")
+        pr = vl.dataProvider()
+        pr.addAttributes([
+            QgsField("fid",        _QINT),
+            QgsField("name",       _QSTRING),
+            QgsField("road_class", _QSTRING),
+            QgsField("length_m",   _QDOUBLE),
+            QgsField("notes",      _QSTRING),
+        ])
+        vl.updateFields()
+        features = []
+        for r in self.editor.all_roads():
+            feat = QgsFeature()
+            pts  = [QgsPointXY(v[0], v[1]) for v in r.vertices]
+            feat.setGeometry(QgsGeometry.fromPolylineXY(pts))
+            feat.setAttributes([r.fid, r.name, r.road_class,
+                                 round(r.length_m, 2), r.notes])
+            features.append(feat)
+        pr.addFeatures(features)
+        vl.updateExtents()
+        return vl
+
+    def _build_station_layer_obj(self):
+        vl = QgsVectorLayer("Point?crs=EPSG:25832", "standplass", "memory")
+        pr = vl.dataProvider()
+        pr.addAttributes([
+            QgsField("fid",        _QINT),
+            QgsField("name",       _QSTRING),
+            QgsField("z_m",        _QDOUBLE),
+            QgsField("capacity_t", _QDOUBLE),
+            QgsField("notes",      _QSTRING),
+        ])
+        vl.updateFields()
+        features = []
+        for s in self.editor.all_stations():
+            feat = QgsFeature()
+            feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(s.x, s.y)))
+            feat.setAttributes([s.fid, s.name, round(s.z, 2),
+                                 round(s.capacity_t, 1), s.notes])
+            features.append(feat)
+        pr.addFeatures(features)
+        vl.updateExtents()
+        return vl
+
+    def _build_dump_layer_obj(self):
+        vl = QgsVectorLayer("Point?crs=EPSG:25832", "velteplass", "memory")
+        pr = vl.dataProvider()
+        pr.addAttributes([
+            QgsField("fid",     _QINT),
+            QgsField("name",    _QSTRING),
+            QgsField("area_m2", _QDOUBLE),
+            QgsField("notes",   _QSTRING),
+        ])
+        vl.updateFields()
+        features = []
+        for d in self.editor.all_dump_sites():
+            feat = QgsFeature()
+            feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(d.x, d.y)))
+            feat.setAttributes([d.fid, d.name, round(d.area_m2, 1), d.notes])
+            features.append(feat)
+        pr.addFeatures(features)
+        vl.updateExtents()
+        return vl
 
     # ------------------------------------------------------------------
     # Export to CSV
