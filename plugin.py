@@ -7,7 +7,6 @@ Refactored from VegValidering for unified forest road planning
 import os
 from qgis.PyQt.QtWidgets import (
     QAction,
-    QMessageBox,
 )
 from qgis.PyQt.QtGui import QIcon
 from qgis.core import QgsProject
@@ -81,13 +80,16 @@ class SkogVegPlaneringPlugin:
     # --- Menu Actions ---
 
     def open_settings(self):
-        """Open settings dialog (placeholder)."""
-        QMessageBox.information(
-            self.iface.mainWindow(),
-            "SkogVegPlanering",
-            "Settings dialog - Coming soon!"
-        )
-        log.info("Settings dialog requested")
+        """Open settings dialog."""
+        from .ui import settings_dialog as sd
+        dlg = sd.SettingsDialog(self.iface)
+        if dlg.exec_():
+            self.max_slope_percent = sd.get_max_slope()
+            self.min_curve_radius = sd.get_min_radius()
+            self.layer_name = sd.get_layer_name() or None
+            self.import_layer_name = sd.get_import_layer_name() or None
+            log.info("Settings updated")
+        log.info("Settings dialog closed")
 
     def open_batch_wizard(self):
         """Open batch PDF import wizard (STEG 3)."""

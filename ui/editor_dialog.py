@@ -44,7 +44,6 @@ from qgis.core import (
     QgsGeometry,
     QgsPointXY,
     QgsField,
-    QgsPolylineXY,
 )
 try:
     from qgis.PyQt.QtCore import QMetaType
