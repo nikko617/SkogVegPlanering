@@ -36,12 +36,14 @@ from qgis.PyQt.QtWidgets import (
 from qgis.core import (
     QgsProject,
     QgsVectorLayer,
+    QgsVectorFileWriter,
     QgsFeature,
     QgsGeometry,
     QgsPointXY,
     QgsFields,
     QgsField,
     QgsCoordinateReferenceSystem,
+    QgsCoordinateTransformContext,
     QgsWkbTypes,
 )
 try:
@@ -222,10 +224,10 @@ class _PageSettings(QWizardPage):
 
         crs_row = QHBoxLayout()
         crs_row.addWidget(QLabel("Koordinatsystem (auth-ID):"))
-        self.crs_edit = QLineEdit("EPSG:25833")
+        self.crs_edit = QLineEdit("EPSG:25832")
         self.crs_edit.setToolTip(
             "Oppgi EPSG-kode eller annen gyldig CRS-identifikator, "
-            "f.eks. EPSG:25833 (UTM 33N, Norge)"
+            "f.eks. EPSG:25832 (UTM 32N, Vest-Norge) eller EPSG:25833 (UTM 33N, Øst-Norge)"
         )
         crs_row.addWidget(self.crs_edit)
         layer_layout.addLayout(crs_row)
@@ -348,6 +350,11 @@ class _PageImport(QWizardPage):
         self.open_layer_btn.clicked.connect(self._open_layer)
         layout.addWidget(self.open_layer_btn)
 
+        self.export_gpkg_btn = QPushButton("Eksporter til GeoPackage (.gpkg)…")
+        self.export_gpkg_btn.setEnabled(False)
+        self.export_gpkg_btn.clicked.connect(self._export_to_gpkg)
+        layout.addWidget(self.export_gpkg_btn)
+
     # ---- QWizardPage overrides -------------------------------------------
 
     def isComplete(self):
@@ -405,6 +412,7 @@ class _PageImport(QWizardPage):
         try:
             self._vector_layer = self._build_layer(results)
             self.open_layer_btn.setEnabled(True)
+            self.export_gpkg_btn.setEnabled(True)
             self._append_log(
                 f"Lag '{self._layer_name}' klar med "
                 f"{self._vector_layer.featureCount()} feature(r)."
@@ -462,6 +470,50 @@ class _PageImport(QWizardPage):
             QMessageBox.critical(
                 self, "Feil", f"Kunne ikke legge til lag:\n{exc}"
             )
+
+    def _export_to_gpkg(self):
+        """Export the imported road layer to a GeoPackage file."""
+        if not hasattr(self, "_vector_layer") or self._vector_layer is None:
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Eksporter til GeoPackage", "", "GeoPackage (*.gpkg)"
+        )
+        if not path:
+            return
+        if not path.endswith(".gpkg"):
+            path += ".gpkg"
+
+        try:
+            options = QgsVectorFileWriter.SaveVectorOptions()
+            options.driverName = "GPKG"
+            options.fileEncoding = "UTF-8"
+            options.layerName = self._layer_name.replace(" ", "_")
+
+            if hasattr(QgsVectorFileWriter, "writeAsVectorFormatV3"):
+                err, msg, _, _ = QgsVectorFileWriter.writeAsVectorFormatV3(
+                    self._vector_layer, path,
+                    QgsCoordinateTransformContext(), options
+                )
+            else:
+                err, msg = QgsVectorFileWriter.writeAsVectorFormatV2(
+                    self._vector_layer, path,
+                    QgsCoordinateTransformContext(), options
+                )[:2]
+
+            if err == 0:
+                self._append_log(f"Eksportert til GeoPackage: {path}")
+                QMessageBox.information(
+                    self, "Eksport fullført",
+                    f"Veglinje-lag eksportert til:\n{path}"
+                )
+                log.info("Exported imported roads to GeoPackage: %s", path)
+            else:
+                QMessageBox.critical(self, "Eksportfeil", f"Feil ved eksport:\n{msg}")
+                log.error("GeoPackage export failed: %s", msg)
+        except Exception as exc:
+            QMessageBox.critical(self, "Eksportfeil", str(exc))
+            log.error("GeoPackage export exception: %s", exc)
 
 
 # ---------------------------------------------------------------------------

@@ -224,6 +224,15 @@ class CablewayDialog(QDialog):
         self.export_btn.clicked.connect(self._on_export)
         btn_row.addWidget(self.export_btn)
 
+        self.editor_btn = QPushButton("Åpne i Editor…")
+        self.editor_btn.setEnabled(False)
+        self.editor_btn.setToolTip(
+            "Overfør beregnede standplass-posisjoner til Interaktiv redigering "
+            "slik at de kan justeres manuelt"
+        )
+        self.editor_btn.clicked.connect(self._on_open_editor)
+        btn_row.addWidget(self.editor_btn)
+
         btn_row.addStretch()
 
         close_btn = QPushButton("Lukk")
@@ -284,6 +293,7 @@ class CablewayDialog(QDialog):
         ]
         self._populate_table(all_stations)
         self.export_btn.setEnabled(bool(all_stations))
+        self.editor_btn.setEnabled(bool(all_stations))
 
         all_warnings = [w for plan in plans for w in plan.warnings]
         total_stations = len(all_stations)
@@ -347,14 +357,32 @@ class CablewayDialog(QDialog):
         except OSError as exc:
             QMessageBox.critical(self, "Eksportfeil", str(exc))
 
-    # ------------------------------------------------------------------
-    # QGIS layer creation
-    # ------------------------------------------------------------------
+    def _on_open_editor(self):
+        """Transfer computed stations to the Interactive Editor for manual adjustment."""
+        if not self._plans:
+            return
+
+        station_records = []
+        for plan in self._plans:
+            for s in plan.stations:
+                station_records.append({
+                    "name": f"Standplass {s.station_id}",
+                    "x": s.x,
+                    "y": s.y,
+                    "z": s.z,
+                    "capacity_t": 0.0,
+                    "notes": f"Beregnet avstand {s.distance_along_road_m:.0f}m",
+                })
+
+        from .editor_dialog import EditorDialog
+        dlg = EditorDialog(self.iface, preload_stations=station_records)
+        dlg.exec_()
+        log.info("Opened editor with %d pre-loaded stations", len(station_records))
 
     def _create_point_layer(self, all_stations):
         """Create a temporary memory point layer with standplass positions."""
         try:
-            vl = QgsVectorLayer("Point?crs=EPSG:4326", "Tauban-standplass", "memory")
+            vl = QgsVectorLayer("Point?crs=EPSG:25832", "Tauban-standplass", "memory")
             pr = vl.dataProvider()
             pr.addAttributes([
                 QgsField("polyline_id", _QINT),

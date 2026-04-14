@@ -56,18 +56,18 @@ class SkogVegPlaneringPlugin:
             self.toolbar.addAction(action)
             return action
 
-        # Toolbar actions (BASIC FOR NOW)
-        add_action("tree.png", "Settings", self.open_settings)
+        # Toolbar actions
+        add_action("settings.svg", "Innstillinger", self.open_settings)
         self.toolbar.addSeparator()
-        add_action("tree.png", "Batch Import Wizard", self.open_batch_wizard)
+        add_action("import.svg", "Batch PDF Import", self.open_batch_wizard)
         self.toolbar.addSeparator()
-        add_action("tree.png", "Validate Network", self.run_validation)
+        add_action("validate.svg", "Valider Nettverk", self.run_validation)
         self.toolbar.addSeparator()
-        add_action("tree.png", "Cost Distribution", self.open_cost_dialog)
+        add_action("cost.svg", "Kostnadsfordeling", self.open_cost_dialog)
         self.toolbar.addSeparator()
-        add_action("tree.png", "Cable Way Planning", self.open_cableway_dialog)
+        add_action("cableway.svg", "Taubanplanlegging", self.open_cableway_dialog)
         self.toolbar.addSeparator()
-        add_action("tree.png", "Interactive Editor", self.open_editor_dialog)
+        add_action("editor.svg", "Interaktiv redigering", self.open_editor_dialog)
 
         log.info("GUI initialized successfully")
 
