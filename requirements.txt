@@ -5,5 +5,6 @@ GDAL>=3.2
 opencv-python-headless>=4.5
 Pillow>=10.0
 pypdf>=4.0
+PyMuPDF>=1.23
 easyocr>=1.6
 rasterio>=1.2
