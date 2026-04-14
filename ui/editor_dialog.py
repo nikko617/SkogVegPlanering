@@ -46,7 +46,16 @@ from qgis.core import (
     QgsField,
     QgsPolylineXY,
 )
-from qgis.PyQt.QtCore import QVariant
+try:
+    from qgis.PyQt.QtCore import QMetaType
+    _QSTRING = QMetaType.Type.QString
+    _QINT    = QMetaType.Type.Int
+    _QDOUBLE = QMetaType.Type.Double
+except (ImportError, AttributeError):
+    from qgis.PyQt.QtCore import QVariant
+    _QSTRING = QVariant.String
+    _QINT    = QVariant.Int
+    _QDOUBLE = QVariant.Double
 
 from ..processors.feature_editor import (
     FeatureEditor,
@@ -536,11 +545,11 @@ class EditorDialog(QDialog):
             vl = QgsVectorLayer("LineString?crs=EPSG:4326", "Veger (redigert)", "memory")
             pr = vl.dataProvider()
             pr.addAttributes([
-                QgsField("fid",        QVariant.Int),
-                QgsField("name",       QVariant.String),
-                QgsField("road_class", QVariant.String),
-                QgsField("length_m",   QVariant.Double),
-                QgsField("notes",      QVariant.String),
+                QgsField("fid",        _QINT),
+                QgsField("name",       _QSTRING),
+                QgsField("road_class", _QSTRING),
+                QgsField("length_m",   _QDOUBLE),
+                QgsField("notes",      _QSTRING),
             ])
             vl.updateFields()
             features = []
@@ -564,11 +573,11 @@ class EditorDialog(QDialog):
             vl = QgsVectorLayer("Point?crs=EPSG:4326", "Standplass (redigert)", "memory")
             pr = vl.dataProvider()
             pr.addAttributes([
-                QgsField("fid",        QVariant.Int),
-                QgsField("name",       QVariant.String),
-                QgsField("z_m",        QVariant.Double),
-                QgsField("capacity_t", QVariant.Double),
-                QgsField("notes",      QVariant.String),
+                QgsField("fid",        _QINT),
+                QgsField("name",       _QSTRING),
+                QgsField("z_m",        _QDOUBLE),
+                QgsField("capacity_t", _QDOUBLE),
+                QgsField("notes",      _QSTRING),
             ])
             vl.updateFields()
             features = []
@@ -591,10 +600,10 @@ class EditorDialog(QDialog):
             vl = QgsVectorLayer("Point?crs=EPSG:4326", "Velteplass (redigert)", "memory")
             pr = vl.dataProvider()
             pr.addAttributes([
-                QgsField("fid",     QVariant.Int),
-                QgsField("name",    QVariant.String),
-                QgsField("area_m2", QVariant.Double),
-                QgsField("notes",   QVariant.String),
+                QgsField("fid",     _QINT),
+                QgsField("name",    _QSTRING),
+                QgsField("area_m2", _QDOUBLE),
+                QgsField("notes",   _QSTRING),
             ])
             vl.updateFields()
             features = []

@@ -44,7 +44,14 @@ from qgis.core import (
     QgsCoordinateReferenceSystem,
     QgsWkbTypes,
 )
-from qgis.PyQt.QtCore import QVariant
+try:
+    from qgis.PyQt.QtCore import QMetaType
+    _QSTRING = QMetaType.Type.QString
+    _QINT    = QMetaType.Type.Int
+except (ImportError, AttributeError):
+    from qgis.PyQt.QtCore import QVariant
+    _QSTRING = QVariant.String
+    _QINT    = QVariant.Int
 
 from ..processors.pdf_importer import DetectionParams, PdfImporter, ImportResult
 from ..utils.logger import setup_logger
@@ -419,8 +426,8 @@ class _PageImport(QWizardPage):
 
         provider = layer.dataProvider()
         fields = QgsFields()
-        fields.append(QgsField("source_pdf", QVariant.String))
-        fields.append(QgsField("page",       QVariant.Int))
+        fields.append(QgsField("source_pdf", _QSTRING))
+        fields.append(QgsField("page",       _QINT))
         provider.addAttributes(fields)
         layer.updateFields()
 
