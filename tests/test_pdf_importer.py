@@ -22,6 +22,7 @@ numpy = pytest.importorskip("numpy")
 cv2   = pytest.importorskip("cv2")
 
 from processors.pdf_importer import (
+    ClassifiedImportResult,
     DetectionParams,
     ImportResult,
     PdfImporter,
@@ -255,3 +256,198 @@ class TestImportResultPageTracking:
         pages     = [0, 0, 1]
         r = ImportResult(pdf_path="x.pdf", polylines=polylines, polyline_pages=pages)
         assert r.polyline_pages == [0, 0, 1]
+
+
+# ---------------------------------------------------------------------------
+# ClassifiedImportResult – dataclass properties
+# ---------------------------------------------------------------------------
+
+class TestClassifiedImportResult:
+
+    def test_success_when_no_errors(self):
+        r = ClassifiedImportResult(
+            pdf_path="x.pdf",
+            roads=[[(0, 0), (1, 1)]],
+        )
+        assert r.success
+        assert r.road_count == 1
+        assert r.station_count == 0
+        assert r.dump_site_count == 0
+
+    def test_failure_when_errors_present(self):
+        r = ClassifiedImportResult(pdf_path="x.pdf", errors=["noe gikk galt"])
+        assert not r.success
+
+    def test_counts_match_list_lengths(self):
+        r = ClassifiedImportResult(
+            pdf_path="x.pdf",
+            roads=[[(0, 0), (1, 1)], [(2, 2), (3, 3)]],
+            stations=[(10.0, 20.0)],
+            dump_sites=[[(5, 5), (6, 5), (6, 6), (5, 6)]],
+        )
+        assert r.road_count == 2
+        assert r.station_count == 1
+        assert r.dump_site_count == 1
+
+    def test_default_page_lists_are_empty(self):
+        r = ClassifiedImportResult(pdf_path="x.pdf")
+        assert r.road_pages == []
+        assert r.station_pages == []
+        assert r.dump_site_pages == []
+
+
+# ---------------------------------------------------------------------------
+# DetectionParams – validation of new blob/area fields
+# ---------------------------------------------------------------------------
+
+class TestDetectionParamsNew:
+
+    def test_default_station_params_are_valid(self):
+        p = DetectionParams()
+        p.validate()  # must not raise
+
+    def test_invalid_station_area_order_raises(self):
+        p = DetectionParams(station_min_area=500.0, station_max_area=100.0)
+        with pytest.raises(ValueError, match="station_min_area"):
+            p.validate()
+
+    def test_zero_station_min_area_raises(self):
+        p = DetectionParams(station_min_area=0.0)
+        with pytest.raises(ValueError):
+            p.validate()
+
+    def test_invalid_circularity_raises(self):
+        p = DetectionParams(station_circularity_min=0.0)
+        with pytest.raises(ValueError, match="station_circularity_min"):
+            p.validate()
+
+    def test_circularity_above_one_raises(self):
+        p = DetectionParams(station_circularity_min=1.1)
+        with pytest.raises(ValueError):
+            p.validate()
+
+    def test_invalid_dump_site_area_order_raises(self):
+        p = DetectionParams(dump_site_min_area=5000.0, dump_site_max_area=1000.0)
+        with pytest.raises(ValueError, match="dump_site_min_area"):
+            p.validate()
+
+    def test_dump_site_max_aspect_below_one_raises(self):
+        p = DetectionParams(dump_site_max_aspect=0.5)
+        with pytest.raises(ValueError, match="dump_site_max_aspect"):
+            p.validate()
+
+
+# ---------------------------------------------------------------------------
+# PdfImporter – detect_features_from_array
+# ---------------------------------------------------------------------------
+
+class TestDetectFeaturesFromArray:
+    """Tests for the classified feature detection pipeline."""
+
+    def setup_method(self):
+        params = DetectionParams(
+            canny_low=30,
+            canny_high=100,
+            hough_threshold=40,
+            hough_min_line_length=20.0,
+            hough_max_line_gap=5.0,
+            station_min_area=30.0,
+            station_max_area=1500.0,
+            station_circularity_min=0.3,
+            dump_site_min_area=1500.0,
+            dump_site_max_area=100000.0,
+            dump_site_max_aspect=6.0,
+        )
+        self.importer = PdfImporter(params)
+
+    def test_blank_image_yields_no_features(self):
+        img = _white_image()
+        roads, stations, dump_sites = self.importer.detect_features_from_array(img)
+        assert roads == []
+        assert stations == []
+        assert dump_sites == []
+
+    def test_road_line_returned_as_road_not_station(self):
+        """A long thin line must be detected as a road but not as a station."""
+        img = _white_image(300, 300)
+        _draw_line(img, 10, 150, 290, 150, thickness=3)
+        roads, stations, _ = self.importer.detect_features_from_array(img)
+        assert len(roads) >= 1
+        # A long line is far too elongated to pass the circularity filter.
+        assert stations == []
+
+    def test_filled_circle_detected_as_station(self):
+        """A filled circle (radius≈10 px) should be classified as a standplass."""
+        img = _white_image(200, 200)
+        cv2.circle(img, (100, 100), 10, 0, -1)  # filled black circle
+        _, stations, _ = self.importer.detect_features_from_array(img)
+        assert len(stations) >= 1
+        # Centroid should be near (100, 100)
+        cx, cy = stations[0]
+        assert abs(cx - 100) < 5
+        assert abs(cy - 100) < 5
+
+    def test_filled_rectangle_detected_as_dump_site(self):
+        """A filled rectangle should be classified as a velteplass."""
+        img = _white_image(300, 300)
+        cv2.rectangle(img, (80, 80), (180, 150), 0, -1)  # 100×70 filled rect
+        _, _, dump_sites = self.importer.detect_features_from_array(img)
+        assert len(dump_sites) >= 1
+        # Each dump site is a polygon with at least 3 vertices.
+        for poly in dump_sites:
+            assert len(poly) >= 3
+
+    def test_station_centroid_is_float_pair(self):
+        """Station centroids must be pairs of floats."""
+        img = _white_image(200, 200)
+        cv2.circle(img, (80, 120), 10, 0, -1)
+        _, stations, _ = self.importer.detect_features_from_array(img)
+        for cx, cy in stations:
+            assert isinstance(cx, float)
+            assert isinstance(cy, float)
+
+    def test_dump_site_polygon_vertices_are_float_pairs(self):
+        """Dump-site polygon vertices must be pairs of floats."""
+        img = _white_image(300, 300)
+        cv2.rectangle(img, (50, 50), (200, 150), 0, -1)
+        _, _, dump_sites = self.importer.detect_features_from_array(img)
+        for poly in dump_sites:
+            for x, y in poly:
+                assert isinstance(x, float)
+                assert isinstance(y, float)
+
+    def test_elongated_rectangle_not_detected_as_dump_site(self):
+        """A very elongated rectangle (aspect > 6) must be excluded."""
+        img = _white_image(300, 300)
+        # 260×10 rectangle → aspect ≈ 26
+        cv2.rectangle(img, (10, 145), (270, 155), 0, -1)
+        _, _, dump_sites = self.importer.detect_features_from_array(img)
+        assert dump_sites == []
+
+
+# ---------------------------------------------------------------------------
+# PdfImporter – import_classified_file error handling
+# ---------------------------------------------------------------------------
+
+class TestImportClassifiedFileErrors:
+
+    def setup_method(self):
+        self.importer = PdfImporter()
+
+    def test_missing_file_returns_error(self):
+        result = self.importer.import_classified_file("/nonexistent/path/map.pdf")
+        assert not result.success
+        assert any("finnes ikke" in e for e in result.errors)
+
+    def test_missing_file_has_zero_features(self):
+        result = self.importer.import_classified_file("/nonexistent/path/map.pdf")
+        assert result.road_count == 0
+        assert result.station_count == 0
+        assert result.dump_site_count == 0
+
+    def test_import_classified_files_returns_one_result_per_path(self):
+        paths = ["/no/file1.pdf", "/no/file2.pdf"]
+        results = self.importer.import_classified_files(paths)
+        assert len(results) == len(paths)
+        for r in results:
+            assert not r.success
