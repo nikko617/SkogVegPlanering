@@ -22,7 +22,7 @@ import logging
 import math
 import os
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -723,6 +723,8 @@ class PdfImporter:
         Looks for viewport measure dictionaries (``/VP`` → ``/Measure`` → ``/GPTS``),
         then derives ``(min_x, min_y, max_x, max_y)`` from the control points.
         """
+        MINIMUM_GPTS_LENGTH = 8  # 4 control points × (x, y)
+
         page_obj = PdfImporter._resolve_pdf_obj(page)
         if page_obj is None:
             return None
@@ -747,7 +749,8 @@ class PdfImporter:
                 values = [float(v) for v in gpts]
             except Exception:
                 continue
-            if len(values) < 4 or (len(values) % 2) != 0:
+            # Extra control points are allowed, but values must come in (x, y) pairs.
+            if len(values) < MINIMUM_GPTS_LENGTH or (len(values) % 2) != 0:
                 continue
             xs = values[0::2]
             ys = values[1::2]
@@ -760,10 +763,11 @@ class PdfImporter:
 
     def _extract_geospatial_bboxes(
         self, pdf_path: str
-    ) -> "dict[int, Tuple[float, float, float, float]]":
+    ) -> "Dict[int, Tuple[float, float, float, float]]":
         """Extract geospatial page bboxes from a GeoPDF via pypdf metadata."""
         if not _HAS_PYPDF:
             return {}
+        safe_pdf_name = os.path.basename(pdf_path)
         try:
             reader = _pypdf.PdfReader(pdf_path)
             bboxes = {}
@@ -774,11 +778,15 @@ class PdfImporter:
             if bboxes:
                 log.info(
                     "GeoPDF metadata detected in %s for %d page(s)",
-                    pdf_path, len(bboxes),
+                    safe_pdf_name, len(bboxes),
                 )
             return bboxes
         except Exception as exc:
-            log.debug("Could not extract GeoPDF metadata from %s: %s", pdf_path, exc)
+            log.debug(
+                "Could not extract GeoPDF metadata from %s: %s",
+                safe_pdf_name,
+                exc,
+            )
             return {}
 
     # ------------------------------------------------------------------
