@@ -19,16 +19,31 @@ def setup_logger(name):
         logging.Logger: Configured logger instance
     """
     logger = logging.getLogger(name)
+    logger.propagate = False
 
-    # Avoid duplicate handlers
+    # Remove stale handlers (can happen across QGIS/plugin reload cycles)
+    valid_handlers = []
+    for existing_handler in logger.handlers:
+        stream = getattr(existing_handler, "stream", object())
+        if isinstance(existing_handler, logging.StreamHandler) and stream is None:
+            try:
+                existing_handler.close()
+            except Exception:
+                pass
+            continue
+        valid_handlers.append(existing_handler)
+    logger.handlers = valid_handlers
+
+    # Avoid duplicate handlers when at least one valid handler remains
     if logger.handlers:
         return logger
 
     # Set logging level
     logger.setLevel(logging.DEBUG)
 
-    # Create StreamHandler (stdout)
-    handler = logging.StreamHandler(sys.stdout)
+    # Create StreamHandler (stdout preferred, then stderr fallback)
+    stream = sys.stdout if sys.stdout is not None else sys.stderr
+    handler = logging.StreamHandler(stream) if stream is not None else logging.NullHandler()
     handler.setLevel(logging.DEBUG)
 
     # Create formatter
