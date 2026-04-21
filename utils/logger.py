@@ -7,6 +7,8 @@ Ensures StreamHandler is configured to prevent NoneType errors
 import logging
 import sys
 
+_MISSING = object()
+
 
 def setup_logger(name):
     """
@@ -24,7 +26,7 @@ def setup_logger(name):
     # Remove stale handlers (can happen across QGIS/plugin reload cycles)
     valid_handlers = []
     for existing_handler in logger.handlers:
-        stream = getattr(existing_handler, "stream", object())
+        stream = getattr(existing_handler, "stream", _MISSING)
         if isinstance(existing_handler, logging.StreamHandler) and stream is None:
             try:
                 existing_handler.close()
@@ -43,8 +45,11 @@ def setup_logger(name):
 
     # Create StreamHandler (stdout preferred, then stderr fallback)
     stream = sys.stdout if sys.stdout is not None else sys.stderr
-    handler = logging.StreamHandler(stream) if stream is not None else logging.NullHandler()
-    handler.setLevel(logging.DEBUG)
+    if stream is not None:
+        handler = logging.StreamHandler(stream)
+        handler.setLevel(logging.DEBUG)
+    else:
+        handler = logging.NullHandler()
 
     # Create formatter
     formatter = logging.Formatter(
