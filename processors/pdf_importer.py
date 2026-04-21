@@ -22,7 +22,7 @@ import logging
 import math
 import os
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -257,6 +257,8 @@ class PdfImporter:
             result.errors.append("PyMuPDF eller pypdf er ikke installert")
             return result
 
+        geospatial_bboxes = self._extract_geospatial_bboxes(pdf_path)
+
         if _HAS_FITZ:
             # PyMuPDF renders both vector and raster PDF content correctly
             try:
@@ -269,6 +271,10 @@ class PdfImporter:
                     try:
                         image = self._render_fitz_page(doc[page_num])
                         polylines = self._detect_lines(image)
+                        bbox = geospatial_bboxes.get(page_num)
+                        if bbox:
+                            h, w = image.shape[:2]
+                            polylines = self.polylines_to_geo(polylines, w, h, bbox)
                         result.polylines.extend(polylines)
                         result.polyline_pages.extend([page_num] * len(polylines))
                         log.debug(
@@ -299,6 +305,10 @@ class PdfImporter:
                     try:
                         image = self._render_page(page)
                         polylines = self._detect_lines(image)
+                        bbox = geospatial_bboxes.get(page_num)
+                        if bbox:
+                            h, w = image.shape[:2]
+                            polylines = self.polylines_to_geo(polylines, w, h, bbox)
                         result.polylines.extend(polylines)
                         result.polyline_pages.extend([page_num] * len(polylines))
                         log.debug(
@@ -364,6 +374,8 @@ class PdfImporter:
             result.errors.append("PyMuPDF eller pypdf er ikke installert")
             return result
 
+        geospatial_bboxes = self._extract_geospatial_bboxes(pdf_path)
+
         if _HAS_FITZ:
             try:
                 doc = _fitz.open(pdf_path)
@@ -376,7 +388,12 @@ class PdfImporter:
                     log.debug("Processing page %d/%d", page_num + 1, result.page_count)
                     try:
                         gray = self._render_fitz_page(doc[page_num])
-                        self._classify_page(gray, page_num, result)
+                        self._classify_page(
+                            gray,
+                            page_num,
+                            result,
+                            geospatial_bboxes.get(page_num),
+                        )
                     except Exception as exc:
                         msg = f"Side {page_num + 1}: {exc}"
                         result.errors.append(msg)
@@ -400,7 +417,12 @@ class PdfImporter:
                     log.debug("Processing page %d/%d", page_num + 1, result.page_count)
                     try:
                         gray = self._render_page(page)
-                        self._classify_page(gray, page_num, result)
+                        self._classify_page(
+                            gray,
+                            page_num,
+                            result,
+                            geospatial_bboxes.get(page_num),
+                        )
                     except Exception as exc:
                         msg = f"Side {page_num + 1}: {exc}"
                         result.errors.append(msg)
@@ -568,11 +590,18 @@ class PdfImporter:
         gray: "np.ndarray",
         page_num: int,
         result: "ClassifiedImportResult",
+        bbox: Optional[Tuple[float, float, float, float]] = None,
     ) -> None:
         """Detect and classify all features on one page, appending to *result*."""
         roads = self._detect_lines_from_gray(gray)
         stations = self._detect_stations_from_gray(gray)
         dump_sites = self._detect_dump_sites_from_gray(gray)
+
+        if bbox:
+            h, w = gray.shape[:2]
+            roads = self.polylines_to_geo(roads, w, h, bbox)
+            stations = self.points_to_geo(stations, w, h, bbox)
+            dump_sites = self.polygons_to_geo(dump_sites, w, h, bbox)
 
         result.roads.extend(roads)
         result.road_pages.extend([page_num] * len(roads))
@@ -672,6 +701,94 @@ class PdfImporter:
                 dump_sites.append(polygon)
         return dump_sites
 
+    @staticmethod
+    def _resolve_pdf_obj(obj):
+        """Resolve pypdf indirect objects to plain Python objects."""
+        if obj is None:
+            return None
+        if hasattr(obj, "get_object"):
+            try:
+                return obj.get_object()
+            except Exception:
+                return obj
+        return obj
+
+    @staticmethod
+    def _extract_geospatial_bbox_from_page(
+        page,
+    ) -> Optional[Tuple[float, float, float, float]]:
+        """
+        Extract geospatial bounding box from a GeoPDF page if available.
+
+        Looks for viewport measure dictionaries (``/VP`` → ``/Measure`` → ``/GPTS``),
+        then derives ``(min_x, min_y, max_x, max_y)`` from the control points.
+        """
+        MINIMUM_GPTS_LENGTH = 8  # 4 control points × (x, y)
+
+        page_obj = PdfImporter._resolve_pdf_obj(page)
+        if page_obj is None:
+            return None
+
+        vp = page_obj.get("/VP") if hasattr(page_obj, "get") else None
+        vp = PdfImporter._resolve_pdf_obj(vp)
+        if vp is None:
+            return None
+
+        viewports = vp if isinstance(vp, (list, tuple)) else [vp]
+        for viewport in viewports:
+            viewport = PdfImporter._resolve_pdf_obj(viewport)
+            if not hasattr(viewport, "get"):
+                continue
+            measure = PdfImporter._resolve_pdf_obj(viewport.get("/Measure"))
+            if not hasattr(measure, "get"):
+                continue
+            gpts = PdfImporter._resolve_pdf_obj(measure.get("/GPTS"))
+            if gpts is None:
+                continue
+            try:
+                values = [float(v) for v in gpts]
+            except Exception:
+                continue
+            # Extra control points are allowed, but values must come in (x, y) pairs.
+            if len(values) < MINIMUM_GPTS_LENGTH or (len(values) % 2) != 0:
+                continue
+            xs = values[0::2]
+            ys = values[1::2]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            if min_x == max_x or min_y == max_y:
+                continue
+            return min_x, min_y, max_x, max_y
+        return None
+
+    def _extract_geospatial_bboxes(
+        self, pdf_path: str
+    ) -> "Dict[int, Tuple[float, float, float, float]]":
+        """Extract geospatial page bboxes from a GeoPDF via pypdf metadata."""
+        if not _HAS_PYPDF:
+            return {}
+        safe_pdf_name = os.path.basename(pdf_path)
+        try:
+            reader = _pypdf.PdfReader(pdf_path)
+            bboxes = {}
+            for page_num, page in enumerate(reader.pages):
+                bbox = self._extract_geospatial_bbox_from_page(page)
+                if bbox:
+                    bboxes[page_num] = bbox
+            if bboxes:
+                log.info(
+                    "GeoPDF metadata detected in %s for %d page(s)",
+                    safe_pdf_name, len(bboxes),
+                )
+            return bboxes
+        except Exception as exc:
+            log.debug(
+                "Could not extract GeoPDF metadata from %s: %s",
+                safe_pdf_name,
+                exc,
+            )
+            return {}
+
     # ------------------------------------------------------------------
     # Coordinate helpers (pixel → geographic)
     # ------------------------------------------------------------------
@@ -736,3 +853,29 @@ class PdfImporter:
             ]
             result.append(geo_pl)
         return result
+
+    @staticmethod
+    def points_to_geo(
+        points: List[Tuple[float, float]],
+        image_width: int,
+        image_height: int,
+        bbox: Tuple[float, float, float, float],
+    ) -> List[Tuple[float, float]]:
+        """Convert a list of pixel-space points to geographic coordinates."""
+        return [
+            PdfImporter.pixel_to_geo(x, y, image_width, image_height, bbox)
+            for x, y in points
+        ]
+
+    @staticmethod
+    def polygons_to_geo(
+        polygons: List[List[Tuple[float, float]]],
+        image_width: int,
+        image_height: int,
+        bbox: Tuple[float, float, float, float],
+    ) -> List[List[Tuple[float, float]]]:
+        """Convert a list of pixel-space polygons to geographic coordinates."""
+        return [
+            PdfImporter.points_to_geo(poly, image_width, image_height, bbox)
+            for poly in polygons
+        ]

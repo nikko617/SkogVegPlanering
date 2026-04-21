@@ -234,6 +234,54 @@ class TestPixelToGeo:
         result = PdfImporter.polylines_to_geo([], 100, 100, (0, 0, 1, 1))
         assert result == []
 
+    def test_points_to_geo(self):
+        points = [(0.0, 0.0), (100.0, 100.0)]
+        bbox = (0.0, 0.0, 1.0, 1.0)
+        result = PdfImporter.points_to_geo(points, 100, 100, bbox)
+        assert result[0] == pytest.approx((0.0, 1.0))
+        assert result[1] == pytest.approx((1.0, 0.0))
+
+    def test_polygons_to_geo(self):
+        polygons = [[(0.0, 0.0), (100.0, 100.0), (50.0, 50.0)]]
+        bbox = (0.0, 0.0, 1.0, 1.0)
+        result = PdfImporter.polygons_to_geo(polygons, 100, 100, bbox)
+        assert result[0][0] == pytest.approx((0.0, 1.0))
+        assert result[0][1] == pytest.approx((1.0, 0.0))
+        assert result[0][2] == pytest.approx((0.5, 0.5))
+
+
+# ---------------------------------------------------------------------------
+# GeoPDF metadata extraction
+# ---------------------------------------------------------------------------
+
+class TestGeoPdfMetadataExtraction:
+
+    def test_extract_geospatial_bbox_from_page(self):
+        page = {
+            "/VP": [
+                {
+                    "/Measure": {
+                        "/GPTS": [
+                            570000.0, 6751000.0,
+                            571000.0, 6751000.0,
+                            571000.0, 6750000.0,
+                            570000.0, 6750000.0,
+                        ]
+                    }
+                }
+            ]
+        }
+        bbox = PdfImporter._extract_geospatial_bbox_from_page(page)
+        assert bbox == pytest.approx((570000.0, 6750000.0, 571000.0, 6751000.0))
+
+    def test_extract_geospatial_bbox_returns_none_without_vp(self):
+        page = {}
+        assert PdfImporter._extract_geospatial_bbox_from_page(page) is None
+
+    def test_extract_geospatial_bbox_returns_none_for_invalid_gpts(self):
+        page = {"/VP": [{"/Measure": {"/GPTS": [10.0, 20.0, 30.0]}}]}
+        assert PdfImporter._extract_geospatial_bbox_from_page(page) is None
+
 
 # ---------------------------------------------------------------------------
 # ImportResult – polyline_pages tracking
