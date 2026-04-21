@@ -9,12 +9,14 @@ All tests use plain Python (no QGIS runtime required).
 import math
 import sys
 import os
+import io
+import logging
 
 # Allow imports from the repo root without installing the package
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-from utils.logger import setup_logger
+from utils.logger import setup_logger, _SafeStreamHandler
 
 
 # ---------------------------------------------------------------------------
@@ -26,6 +28,52 @@ def test_logger_import():
     logger = setup_logger("test")
     assert logger is not None
     assert logger.name == "test"
+
+
+def test_logger_replaces_stream_none_handler():
+    """setup_logger should drop stale stream handlers with stream=None."""
+    logger_name = "test_stream_none_cleanup"
+    stale = logging.getLogger(logger_name)
+    stale.handlers = []
+    handler = _SafeStreamHandler(io.StringIO())
+    handler.stream = None
+    stale.addHandler(handler)
+
+    logger = setup_logger(logger_name)
+    stream_handlers = [h for h in logger.handlers if isinstance(h, logging.StreamHandler)]
+    assert stream_handlers
+    assert all(getattr(h, "stream", None) is not None for h in stream_handlers)
+    logger.info("logger emits after stream=None cleanup")
+
+
+def test_logger_replaces_closed_stream_handler():
+    """setup_logger should drop stale handlers with closed stream objects."""
+    logger_name = "test_closed_stream_cleanup"
+    stale = logging.getLogger(logger_name)
+    stale.handlers = []
+    closed_stream = io.StringIO()
+    handler = _SafeStreamHandler(closed_stream)
+    closed_stream.close()
+    stale.addHandler(handler)
+
+    logger = setup_logger(logger_name)
+    stream_handlers = [h for h in logger.handlers if isinstance(h, logging.StreamHandler)]
+    assert stream_handlers
+    assert all(not getattr(h.stream, "closed", False) for h in stream_handlers)
+    logger.info("logger emits after closed-stream cleanup")
+
+
+def test_safe_handler_emit_recovers_none_stream(monkeypatch):
+    """_SafeStreamHandler should recover when stream becomes None at emit time."""
+    sink = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", sink)
+    monkeypatch.setattr(sys, "stderr", None)
+
+    handler = _SafeStreamHandler(io.StringIO())
+    handler.stream = None
+    record = logging.LogRecord("test", logging.INFO, __file__, 1, "hello", (), None)
+    handler.emit(record)
+    assert "hello" in sink.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -189,4 +237,3 @@ def test_validation_result_repr_failed():
     from core.validator import ValidationResult
     r = ValidationResult(2, "curve_radius", False, "For liten radius", 8.0)
     assert "✗" in repr(r)
-

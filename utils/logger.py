@@ -11,6 +11,27 @@ import sys
 _MISSING = object()
 
 
+def _pick_stream():
+    """Select the best available output stream for logging."""
+    stream = sys.stdout if sys.stdout is not None else sys.stderr
+    if stream is None or getattr(stream, "closed", False):
+        return None
+    return stream
+
+
+class _SafeStreamHandler(logging.StreamHandler):
+    """Stream handler that tolerates stream shutdown during QGIS/plugin reloads."""
+
+    def emit(self, record):
+        stream = self.stream
+        if stream is None or getattr(stream, "closed", False):
+            fallback = _pick_stream()
+            if fallback is None:
+                return
+            self.setStream(fallback)
+        super().emit(record)
+
+
 def setup_logger(name):
     """
     Setup a logger with proper StreamHandler.
@@ -48,9 +69,9 @@ def setup_logger(name):
     logger.setLevel(logging.DEBUG)
 
     # Create StreamHandler (stdout preferred, then stderr fallback)
-    stream = sys.stdout if sys.stdout is not None else sys.stderr
+    stream = _pick_stream()
     if stream is not None:
-        handler = logging.StreamHandler(stream)
+        handler = _SafeStreamHandler(stream)
         handler.setLevel(logging.DEBUG)
 
         # Create formatter
