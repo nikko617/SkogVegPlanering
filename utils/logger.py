@@ -27,8 +27,10 @@ def setup_logger(name):
     # Remove stale handlers (can happen across QGIS/plugin reload cycles)
     valid_handlers = []
     for existing_handler in logger.handlers:
+        stream = getattr(existing_handler, "stream", _MISSING)
+        stream_closed = getattr(stream, "closed", False) if stream is not _MISSING else False
         if isinstance(existing_handler, logging.StreamHandler) and (
-            getattr(existing_handler, "stream", _MISSING) is None
+            stream is None or stream_closed
         ):
             try:
                 existing_handler.close()
@@ -50,15 +52,14 @@ def setup_logger(name):
     if stream is not None:
         handler = logging.StreamHandler(stream)
         handler.setLevel(logging.DEBUG)
+
+        # Create formatter
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        handler.setFormatter(formatter)
     else:
         handler = logging.NullHandler()
-
-    # Create formatter
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    if isinstance(handler, logging.StreamHandler):
-        handler.setFormatter(formatter)
 
     # Add handler to logger
     logger.addHandler(handler)
