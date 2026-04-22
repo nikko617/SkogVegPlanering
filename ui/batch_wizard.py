@@ -75,6 +75,11 @@ _FIELD_MAX_LINE_GAP = "max_line_gap"   # float
 _FIELD_HOUGH_THRESH = "hough_thresh"   # int
 _FIELD_DPI          = "dpi"            # int
 
+# Sanity threshold: warn the user in the log when a single PDF yields
+# more lines than this, which usually indicates that text/symbols are
+# being picked up and parameters should be tightened.
+_WARN_LINE_COUNT_THRESHOLD = 500
+
 
 # ---------------------------------------------------------------------------
 # Background worker
@@ -115,6 +120,12 @@ class _ImportWorker(QThread):
             self.log_msg.emit(
                 f"  [OK] {result.line_count} linje(r) funnet på {result.page_count} side(r)"
             )
+            if result.line_count > _WARN_LINE_COUNT_THRESHOLD:
+                self.log_msg.emit(
+                    f"  [ADVARSEL] Uvanleg mange linjer ({result.line_count}) "
+                    f"– vurder å justere parametere i Steg 2 "
+                    f"(f.eks. øke Hough-terskel eller min. linjelengde)."
+                )
             self.file_done.emit(path, result.line_count, len(result.errors))
 
         self.all_done.emit(results)

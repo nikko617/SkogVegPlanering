@@ -178,6 +178,50 @@ class DetectionParams:
     dump_site_max_area: float = 100000.0   # pixels²
     dump_site_max_aspect: float = 6.0      # max(w,h) / min(w,h) limit
 
+    # ------------------------------------------------------------------
+    # Colour filter for planned-road lines (HSV)
+    # ------------------------------------------------------------------
+    # Hue ranges (OpenCV uses H ∈ [0, 179]) that identify road lines.
+    # The default targets saturated red/magenta hues typical of planned
+    # forest road drawings.  A range ``(lo, hi)`` with ``lo > hi`` is
+    # treated as a wrap-around range (e.g. ``(170, 179)`` + ``(0, 10)``
+    # covers both sides of the red hue wrap).  Set to an empty list to
+    # disable the colour filter entirely.
+    road_hue_ranges: List[Tuple[int, int]] = field(
+        default_factory=lambda: [(0, 10), (160, 179)]
+    )
+    road_sat_min: int = 80       # minimum saturation (0-255)
+    road_val_min: int = 40       # minimum value / brightness (0-255)
+    # Fraction of pixels that must match the colour filter before it is
+    # trusted.  If fewer match (e.g. a monochrome scan), the importer
+    # falls back to full grayscale detection.
+    road_min_pixel_fraction: float = 0.0005
+
+    # ------------------------------------------------------------------
+    # Text / symbol masking (applied before Canny)
+    # ------------------------------------------------------------------
+    # Small compact dark components (letters, numbers, point symbols)
+    # are painted white before edge detection so they do not produce
+    # spurious Hough segments.
+    text_mask_enabled: bool = True
+    text_mask_max_area: float = 300.0     # pixels² – upper size limit
+    text_mask_aspect_max: float = 3.0     # long/short bounding-box ratio limit
+
+    # ------------------------------------------------------------------
+    # Collinear-segment merging (applied after HoughLinesP)
+    # ------------------------------------------------------------------
+    merge_collinear_enabled: bool = True
+    merge_angle_tol_deg: float = 2.0      # group segments within this angle
+    merge_dist_tol_px: float = 6.0        # and this perpendicular distance
+
+    # ------------------------------------------------------------------
+    # Dynamic minimum-line-length scaling
+    # ------------------------------------------------------------------
+    # When True, ``hough_min_line_length`` is used as a floor and is
+    # automatically increased for very large rasters so that scanner
+    # noise does not dominate the output.
+    auto_scale_min_line_length: bool = True
+
     def validate(self):
         """Raise ValueError on obviously wrong parameter values."""
         if not (0 <= self.canny_low < self.canny_high <= 255):
@@ -200,6 +244,25 @@ class DetectionParams:
             )
         if self.dump_site_max_aspect < 1.0:
             raise ValueError("dump_site_max_aspect must be >= 1.0")
+        for lo, hi in self.road_hue_ranges:
+            if not (0 <= lo <= 179 and 0 <= hi <= 179):
+                raise ValueError(
+                    f"road_hue_ranges values must be in [0, 179]: ({lo}, {hi})"
+                )
+        if not (0 <= self.road_sat_min <= 255):
+            raise ValueError("road_sat_min must be in [0, 255]")
+        if not (0 <= self.road_val_min <= 255):
+            raise ValueError("road_val_min must be in [0, 255]")
+        if not (0.0 <= self.road_min_pixel_fraction <= 1.0):
+            raise ValueError("road_min_pixel_fraction must be in [0, 1]")
+        if self.text_mask_max_area < 0:
+            raise ValueError("text_mask_max_area must be >= 0")
+        if self.text_mask_aspect_max < 1.0:
+            raise ValueError("text_mask_aspect_max must be >= 1.0")
+        if self.merge_angle_tol_deg < 0:
+            raise ValueError("merge_angle_tol_deg must be >= 0")
+        if self.merge_dist_tol_px < 0:
+            raise ValueError("merge_dist_tol_px must be >= 0")
 
 
 # ---------------------------------------------------------------------------
@@ -269,11 +332,11 @@ class PdfImporter:
                 for page_num in range(doc.page_count):
                     log.debug("Processing page %d/%d", page_num + 1, result.page_count)
                     try:
-                        image = self._render_fitz_page(doc[page_num])
-                        polylines = self._detect_lines(image)
+                        rgb = self._render_fitz_page_rgb(doc[page_num])
+                        polylines = self._detect_lines_from_rgb(rgb)
                         bbox = geospatial_bboxes.get(page_num)
                         if bbox:
-                            h, w = image.shape[:2]
+                            h, w = rgb.shape[:2]
                             polylines = self.polylines_to_geo(polylines, w, h, bbox)
                         result.polylines.extend(polylines)
                         result.polyline_pages.extend([page_num] * len(polylines))
@@ -387,12 +450,14 @@ class PdfImporter:
                 for page_num in range(doc.page_count):
                     log.debug("Processing page %d/%d", page_num + 1, result.page_count)
                     try:
-                        gray = self._render_fitz_page(doc[page_num])
+                        rgb = self._render_fitz_page_rgb(doc[page_num])
+                        gray = _cv2.cvtColor(rgb[..., :3], _cv2.COLOR_RGB2GRAY)
                         self._classify_page(
                             gray,
                             page_num,
                             result,
                             geospatial_bboxes.get(page_num),
+                            rgb=rgb,
                         )
                     except Exception as exc:
                         msg = f"Side {page_num + 1}: {exc}"
@@ -504,6 +569,36 @@ class PdfImporter:
         dump_sites = self._detect_dump_sites_from_gray(gray_array)
         return roads, stations, dump_sites
 
+    def detect_lines_from_rgb(self, rgb_array: "np.ndarray") -> List[Polyline]:
+        """
+        Run colour-aware line detection on an RGB NumPy array.
+
+        When enough pixels match the configured road-colour filter, the
+        detection is restricted to those pixels; otherwise it falls
+        back to grayscale detection on the image luminance.
+        """
+        if not _HAS_CV2:
+            raise RuntimeError("opencv-python-headless is required")
+        return self._detect_lines_from_rgb(rgb_array)
+
+    def detect_features_from_rgb(
+        self, rgb_array: "np.ndarray"
+    ) -> "Tuple[List[Polyline], List[Tuple[float, float]], List[List[Tuple[float, float]]]]":
+        """
+        Run colour-aware feature classification on an RGB NumPy array.
+
+        Roads use the colour-based mask (with grayscale fallback) while
+        stations and dump-sites are always detected on the grayscale
+        luminance.
+        """
+        if not _HAS_CV2:
+            raise RuntimeError("opencv-python-headless is required")
+        gray = _cv2.cvtColor(rgb_array[..., :3], _cv2.COLOR_RGB2GRAY)
+        roads = self._detect_lines_from_rgb(rgb_array)
+        stations = self._detect_stations_from_gray(gray)
+        dump_sites = self._detect_dump_sites_from_gray(gray)
+        return roads, stations, dump_sites
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
@@ -524,6 +619,19 @@ class PdfImporter:
         # .copy() is required: pixmap.samples is a read-only buffer;
         # OpenCV operations later need a writable array.
         return arr.reshape(pixmap.height, pixmap.width).copy()
+
+    def _render_fitz_page_rgb(self, fitz_page) -> "np.ndarray":
+        """
+        Render a PyMuPDF page to an RGB NumPy array (H×W×3, uint8).
+
+        Used by the colour-aware detection pipeline so that the HSV
+        road-mask can identify planned-road ink by hue.
+        """
+        scale = self.params.dpi / 72.0
+        mat = _fitz.Matrix(scale, scale)
+        pixmap = fitz_page.get_pixmap(matrix=mat, colorspace=_fitz.csRGB)
+        arr = np.frombuffer(pixmap.samples, dtype=np.uint8)
+        return arr.reshape(pixmap.height, pixmap.width, 3).copy()
 
     def _render_page(self, page) -> "np.ndarray":
         """
@@ -566,14 +674,25 @@ class PdfImporter:
         """Core detection logic shared by ``_detect_lines`` and ``detect_lines_from_array``."""
         p = self.params
 
-        edges = _cv2.Canny(gray, p.canny_low, p.canny_high)
+        # Step 1: mask out small compact dark components (text, point symbols)
+        working = self._mask_out_text(gray) if p.text_mask_enabled else gray
+
+        edges = _cv2.Canny(working, p.canny_low, p.canny_high)
+
+        # Step 2: auto-scale minimum line length for large rasters
+        h, w = gray.shape[:2]
+        if p.auto_scale_min_line_length:
+            dynamic_min = max(30.0, 0.003 * min(w, h)) * (p.dpi / 150.0)
+            min_line_length = max(p.hough_min_line_length, dynamic_min)
+        else:
+            min_line_length = p.hough_min_line_length
 
         segments = _cv2.HoughLinesP(
             edges,
             rho=p.hough_rho,
             theta=p.hough_theta,
             threshold=p.hough_threshold,
-            minLineLength=p.hough_min_line_length,
+            minLineLength=min_line_length,
             maxLineGap=p.hough_max_line_gap,
         )
 
@@ -583,7 +702,216 @@ class PdfImporter:
                 x1, y1, x2, y2 = seg[0]
                 polylines.append([(float(x1), float(y1)), (float(x2), float(y2))])
 
+        # Step 3: collapse duplicate / collinear segments
+        if p.merge_collinear_enabled and polylines:
+            polylines = self._merge_collinear(
+                polylines,
+                angle_tol_deg=p.merge_angle_tol_deg,
+                dist_tol_px=p.merge_dist_tol_px,
+            )
+
         return polylines
+
+    def _mask_out_text(self, gray: "np.ndarray") -> "np.ndarray":
+        """
+        Paint small, compact dark blobs white so they do not produce
+        Hough segments.
+
+        Components whose area is ≤ ``text_mask_max_area`` AND whose
+        bounding-box aspect ratio is ≤ ``text_mask_aspect_max`` are
+        treated as text or point symbols and removed.  The affected
+        region is dilated slightly before painting so anti-aliased
+        glyph halos also disappear.
+        """
+        p = self.params
+        if p.text_mask_max_area <= 0:
+            return gray
+        _, thresh = _cv2.threshold(
+            gray, 0, 255, _cv2.THRESH_BINARY_INV + _cv2.THRESH_OTSU
+        )
+        num, labels, stats, _ = _cv2.connectedComponentsWithStats(
+            thresh, connectivity=8
+        )
+        if num <= 1:
+            return gray
+
+        # Collect IDs of all components classified as text / small symbols.
+        remove_ids: List[int] = []
+        for i in range(1, num):
+            area = int(stats[i, _cv2.CC_STAT_AREA])
+            if area > p.text_mask_max_area:
+                continue
+            w = int(stats[i, _cv2.CC_STAT_WIDTH])
+            h = int(stats[i, _cv2.CC_STAT_HEIGHT])
+            short = max(1, min(w, h))
+            aspect = max(w, h) / short
+            if aspect <= p.text_mask_aspect_max:
+                remove_ids.append(i)
+
+        if not remove_ids:
+            return gray
+
+        small_mask = np.isin(labels, np.asarray(remove_ids, dtype=labels.dtype))
+        small_mask_u8 = small_mask.astype(np.uint8) * 255
+        # Dilate so anti-aliased halos around glyphs also get painted white.
+        kernel = _cv2.getStructuringElement(_cv2.MORPH_RECT, (3, 3))
+        dilated = _cv2.dilate(small_mask_u8, kernel, iterations=1)
+        cleaned = gray.copy()
+        cleaned[dilated > 0] = 255
+        return cleaned
+
+    @staticmethod
+    def _merge_collinear(
+        segments: List[Polyline],
+        angle_tol_deg: float = 2.0,
+        dist_tol_px: float = 6.0,
+    ) -> List[Polyline]:
+        """
+        Merge nearly-collinear / overlapping two-point polylines.
+
+        Each input segment is assigned a ``(theta, d)`` key, where
+        ``theta`` is the line's direction mod π and ``d`` is the signed
+        perpendicular distance from the origin.  Segments whose keys
+        differ by ``≤ angle_tol_deg`` and ``≤ dist_tol_px`` are grouped.
+        Within each group, endpoints are projected onto a shared axis
+        and overlapping / close intervals are combined.
+        """
+        if not segments:
+            return []
+
+        angle_tol = math.radians(angle_tol_deg)
+        pi = math.pi
+
+        parsed = []
+        for seg in segments:
+            (x1, y1), (x2, y2) = seg[0], seg[1]
+            theta = math.atan2(y2 - y1, x2 - x1)
+            if theta < 0:
+                theta += pi
+            if theta >= pi:
+                theta -= pi
+            # Normal direction (unit vector perpendicular to the line)
+            nx = -math.sin(theta)
+            ny = math.cos(theta)
+            # Signed perpendicular distance from origin to the line
+            d = x1 * nx + y1 * ny
+            parsed.append((theta, d, float(x1), float(y1), float(x2), float(y2)))
+
+        groups: List[dict] = []
+        for theta, d, x1, y1, x2, y2 in parsed:
+            placed = False
+            for g in groups:
+                dtheta = abs(theta - g["theta"])
+                dtheta = min(dtheta, pi - dtheta)
+                if dtheta <= angle_tol and abs(d - g["d"]) <= dist_tol_px:
+                    g["members"].append((x1, y1, x2, y2))
+                    placed = True
+                    break
+            if not placed:
+                groups.append({"theta": theta, "d": d,
+                               "members": [(x1, y1, x2, y2)]})
+
+        merged: List[Polyline] = []
+        for g in groups:
+            theta = g["theta"]
+            d = g["d"]
+            dx_dir = math.cos(theta)
+            dy_dir = math.sin(theta)
+            nx = -math.sin(theta)
+            ny = math.cos(theta)
+            # Project all endpoints onto the line direction; record t-intervals.
+            intervals: List[Tuple[float, float]] = []
+            for x1, y1, x2, y2 in g["members"]:
+                t1 = x1 * dx_dir + y1 * dy_dir
+                t2 = x2 * dx_dir + y2 * dy_dir
+                if t1 > t2:
+                    t1, t2 = t2, t1
+                intervals.append((t1, t2))
+            intervals.sort()
+            cur_lo, cur_hi = intervals[0]
+            collapsed: List[Tuple[float, float]] = []
+            for lo, hi in intervals[1:]:
+                if lo <= cur_hi + dist_tol_px:
+                    cur_hi = max(cur_hi, hi)
+                else:
+                    collapsed.append((cur_lo, cur_hi))
+                    cur_lo, cur_hi = lo, hi
+            collapsed.append((cur_lo, cur_hi))
+
+            # Reference point on the line: foot of perpendicular from origin.
+            px0 = d * nx
+            py0 = d * ny
+            for lo, hi in collapsed:
+                p1 = (px0 + lo * dx_dir, py0 + lo * dy_dir)
+                p2 = (px0 + hi * dx_dir, py0 + hi * dy_dir)
+                merged.append([p1, p2])
+
+        return merged
+
+    # ------------------------------------------------------------------
+    # Colour-aware line detection
+    # ------------------------------------------------------------------
+
+    def _extract_road_mask(
+        self, rgb: "np.ndarray"
+    ) -> "Optional[np.ndarray]":
+        """
+        Build a grayscale-like road-mask image from an RGB raster.
+
+        Pixels whose HSV values fall inside any configured hue range
+        AND pass the saturation/value thresholds are kept as "road
+        ink" (rendered black on white, so the downstream Canny + Hough
+        pipeline works unchanged).  Returns ``None`` when the mask
+        contains too few pixels to trust – the caller should then fall
+        back to full grayscale processing.
+        """
+        p = self.params
+        if not p.road_hue_ranges:
+            return None
+        if rgb is None or rgb.ndim != 3 or rgb.shape[2] < 3:
+            return None
+
+        hsv = _cv2.cvtColor(rgb[..., :3], _cv2.COLOR_RGB2HSV)
+        h_ch = hsv[..., 0]
+        s_ch = hsv[..., 1]
+        v_ch = hsv[..., 2]
+
+        match = np.zeros(h_ch.shape, dtype=bool)
+        for lo, hi in p.road_hue_ranges:
+            if lo <= hi:
+                hue_match = (h_ch >= lo) & (h_ch <= hi)
+            else:
+                # Wrap-around range (e.g. (170, 10))
+                hue_match = (h_ch >= lo) | (h_ch <= hi)
+            match |= hue_match
+
+        match &= (s_ch >= p.road_sat_min) & (v_ch >= p.road_val_min)
+
+        total = match.size
+        if total == 0:
+            return None
+        frac = float(np.count_nonzero(match)) / total
+        if frac < p.road_min_pixel_fraction:
+            return None
+
+        # Invert: road pixels → 0 (dark), background → 255 (white).
+        out = np.full(match.shape, 255, dtype=np.uint8)
+        out[match] = 0
+        return out
+
+    def _detect_lines_from_rgb(self, rgb: "np.ndarray") -> List[Polyline]:
+        """
+        Detect road polylines from an RGB raster.
+
+        Uses the colour-based road mask when enough coloured pixels are
+        present; otherwise falls back to grayscale detection on the
+        luminance channel.
+        """
+        mask = self._extract_road_mask(rgb)
+        if mask is not None:
+            return self._detect_lines_from_gray(mask)
+        gray = _cv2.cvtColor(rgb[..., :3], _cv2.COLOR_RGB2GRAY)
+        return self._detect_lines_from_gray(gray)
 
     def _classify_page(
         self,
@@ -591,9 +919,13 @@ class PdfImporter:
         page_num: int,
         result: "ClassifiedImportResult",
         bbox: Optional[Tuple[float, float, float, float]] = None,
+        rgb: "Optional[np.ndarray]" = None,
     ) -> None:
         """Detect and classify all features on one page, appending to *result*."""
-        roads = self._detect_lines_from_gray(gray)
+        if rgb is not None:
+            roads = self._detect_lines_from_rgb(rgb)
+        else:
+            roads = self._detect_lines_from_gray(gray)
         stations = self._detect_stations_from_gray(gray)
         dump_sites = self._detect_dump_sites_from_gray(gray)
 

@@ -499,3 +499,196 @@ class TestImportClassifiedFileErrors:
         assert len(results) == len(paths)
         for r in results:
             assert not r.success
+
+
+# ---------------------------------------------------------------------------
+# PdfImporter – collinear segment merging
+# ---------------------------------------------------------------------------
+
+class TestMergeCollinear:
+    """Tests for the static ``_merge_collinear`` helper."""
+
+    def test_empty_input(self):
+        assert PdfImporter._merge_collinear([]) == []
+
+    def test_single_segment_passes_through(self):
+        seg = [[(10.0, 10.0), (100.0, 10.0)]]
+        out = PdfImporter._merge_collinear(seg)
+        assert len(out) == 1
+        # Endpoints should be preserved (up to floating-point).
+        (x1, y1), (x2, y2) = out[0]
+        assert {(round(x1), round(y1)), (round(x2), round(y2))} == {
+            (10, 10), (100, 10)
+        }
+
+    def test_two_parallel_segments_close_are_merged(self):
+        """Two almost-identical lines ≤ 6 px apart should collapse into one."""
+        segs = [
+            [(10.0, 100.0), (200.0, 100.0)],
+            [(10.0, 103.0), (200.0, 103.0)],  # 3 px away, same direction
+        ]
+        out = PdfImporter._merge_collinear(segs, angle_tol_deg=2.0,
+                                           dist_tol_px=6.0)
+        assert len(out) == 1
+
+    def test_parallel_far_apart_not_merged(self):
+        """Two parallel lines > dist_tol_px apart must stay separate."""
+        segs = [
+            [(10.0, 100.0), (200.0, 100.0)],
+            [(10.0, 130.0), (200.0, 130.0)],  # 30 px away
+        ]
+        out = PdfImporter._merge_collinear(segs, angle_tol_deg=2.0,
+                                           dist_tol_px=6.0)
+        assert len(out) == 2
+
+    def test_collinear_overlapping_segments_are_joined(self):
+        """Two overlapping segments on the same line should merge to one."""
+        segs = [
+            [(10.0, 100.0), (110.0, 100.0)],
+            [(90.0, 100.0), (210.0, 100.0)],  # overlaps in x=[90, 110]
+        ]
+        out = PdfImporter._merge_collinear(segs, angle_tol_deg=2.0,
+                                           dist_tol_px=6.0)
+        assert len(out) == 1
+        (x1, y1), (x2, y2) = out[0]
+        xs = sorted([x1, x2])
+        assert xs[0] == pytest.approx(10.0, abs=1.0)
+        assert xs[1] == pytest.approx(210.0, abs=1.0)
+
+    def test_collinear_with_small_gap_joined(self):
+        """Two collinear segments with a gap ≤ dist_tol_px should merge."""
+        segs = [
+            [(10.0, 100.0), (100.0, 100.0)],
+            [(105.0, 100.0), (200.0, 100.0)],  # 5 px gap, tol=6
+        ]
+        out = PdfImporter._merge_collinear(segs, angle_tol_deg=2.0,
+                                           dist_tol_px=6.0)
+        assert len(out) == 1
+
+    def test_perpendicular_segments_not_merged(self):
+        segs = [
+            [(50.0, 10.0), (50.0, 190.0)],
+            [(10.0, 100.0), (190.0, 100.0)],
+        ]
+        out = PdfImporter._merge_collinear(segs)
+        assert len(out) == 2
+
+
+# ---------------------------------------------------------------------------
+# PdfImporter – colour-aware road detection
+# ---------------------------------------------------------------------------
+
+class TestDetectLinesFromRgb:
+
+    def setup_method(self):
+        params = DetectionParams(
+            canny_low=30,
+            canny_high=100,
+            hough_threshold=40,
+            hough_min_line_length=20.0,
+            hough_max_line_gap=5.0,
+        )
+        self.importer = PdfImporter(params)
+
+    @staticmethod
+    def _white_rgb(h=300, w=300):
+        return numpy.ones((h, w, 3), dtype=numpy.uint8) * 255
+
+    def test_red_lines_detected_noise_ignored(self):
+        """Three red lines plus heavy black text → ≤ 6 segments after merge."""
+        img = self._white_rgb(300, 400)
+        # 3 red road lines on white background (BGR tuple passed via RGB image)
+        red = (255, 0, 0)  # image is RGB
+        cv2.line(img, (20, 60), (380, 60), red, 3)
+        cv2.line(img, (20, 150), (380, 150), red, 3)
+        cv2.line(img, (20, 240), (380, 240), red, 3)
+
+        # Add plenty of black text-like noise: many short black strokes that
+        # should be filtered out by the text-mask + colour-mask combo.
+        for yy in range(10, 290, 15):
+            for xx in range(10, 390, 22):
+                cv2.putText(
+                    img, "N", (xx, yy), cv2.FONT_HERSHEY_SIMPLEX, 0.35,
+                    (0, 0, 0), 1, cv2.LINE_AA,
+                )
+
+        lines = self.importer.detect_lines_from_rgb(img)
+        # Should detect the 3 red lines; after collinear merging we expect
+        # far fewer than the raw Hough count and definitely no text noise.
+        assert 1 <= len(lines) <= 6
+
+    def test_grayscale_fallback_when_no_colour(self):
+        """Monochrome (black on white) RGB → colour mask yields no pixels,
+        pipeline must fall back to grayscale detection."""
+        img = self._white_rgb(200, 200)
+        cv2.line(img, (10, 100), (190, 100), (0, 0, 0), 3)
+        lines = self.importer.detect_lines_from_rgb(img)
+        assert len(lines) >= 1
+
+    def test_extract_road_mask_returns_none_when_no_match(self):
+        """All-white image → mask fraction below floor → returns None."""
+        img = self._white_rgb(100, 100)
+        assert self.importer._extract_road_mask(img) is None
+
+    def test_extract_road_mask_returns_image_when_enough_red(self):
+        img = self._white_rgb(200, 200)
+        cv2.rectangle(img, (20, 20), (180, 180), (255, 0, 0), -1)
+        mask = self.importer._extract_road_mask(img)
+        assert mask is not None
+        assert mask.shape == (200, 200)
+        # Road pixels should be dark (0) on a white background.
+        assert int(mask.min()) == 0
+        assert int(mask.max()) == 255
+
+    def test_detect_features_from_rgb_returns_all_three_lists(self):
+        img = self._white_rgb(300, 300)
+        cv2.line(img, (10, 150), (290, 150), (255, 0, 0), 3)  # red road
+        roads, stations, dump_sites = self.importer.detect_features_from_rgb(img)
+        assert isinstance(roads, list)
+        assert isinstance(stations, list)
+        assert isinstance(dump_sites, list)
+
+
+# ---------------------------------------------------------------------------
+# PdfImporter – text / symbol masking
+# ---------------------------------------------------------------------------
+
+class TestTextMask:
+
+    def test_small_black_symbols_removed_before_detection(self):
+        """Dense small glyphs must not produce a flood of Hough segments."""
+        params = DetectionParams(
+            canny_low=30, canny_high=100,
+            hough_threshold=40, hough_min_line_length=20.0,
+            hough_max_line_gap=5.0,
+        )
+        importer = PdfImporter(params)
+
+        img = _white_image(300, 300)
+        # Fill with small glyph-like symbols that would trigger many
+        # Hough lines without the text mask.
+        for yy in range(10, 290, 12):
+            for xx in range(10, 290, 18):
+                cv2.putText(
+                    img, "M", (xx, yy), cv2.FONT_HERSHEY_SIMPLEX, 0.35, 0, 1,
+                    cv2.LINE_AA,
+                )
+        # And a single real long road line.
+        _draw_line(img, 10, 150, 290, 150, thickness=3)
+
+        lines = importer.detect_lines_from_array(img)
+        # Without the mask this image yields dozens of noise segments.
+        assert len(lines) <= 10
+        # The real line must still survive.
+        assert len(lines) >= 1
+
+    def test_text_mask_preserves_long_lines(self):
+        """Long thick lines must not be removed by the text mask."""
+        params = DetectionParams()
+        importer = PdfImporter(params)
+        img = _white_image(300, 300)
+        _draw_line(img, 10, 150, 290, 150, thickness=3)
+        cleaned = importer._mask_out_text(img)
+        # Large contiguous component is preserved: the center pixels
+        # along the line must still be dark.
+        assert int(cleaned[150, 150]) == 0
