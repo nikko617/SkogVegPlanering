@@ -123,8 +123,8 @@ class _ImportWorker(QThread):
             if result.line_count > _WARN_LINE_COUNT_THRESHOLD:
                 self.log_msg.emit(
                     f"  [ADVARSEL] Uvanleg mange linjer ({result.line_count}) "
-                    f"– vurder å justere parametrar i Steg 2 "
-                    f"(t.d. auke Hough-terskel eller min. linjelengd)."
+                    f"– vurder å justere parametere i Steg 2 "
+                    f"(f.eks. øke Hough-terskel eller min. linjelengde)."
                 )
             self.file_done.emit(path, result.line_count, len(result.errors))
 
